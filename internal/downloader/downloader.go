@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,7 +26,14 @@ func NewDownloader() *Downloader {
 	return &Downloader{&client}
 }
 
-func (d *Downloader) Download(ctx context.Context, rawurl, outPath string) error {
+func (d *Downloader) Download(ctx context.Context, rawurl, outPath string, concurrent int) error {
+	if concurrent > 1 {
+		return d.concurrentDownload(ctx, rawurl, outPath, concurrent)
+	}
+	return d.singleDownload(ctx, rawurl, outPath)
+}
+
+func (d *Downloader) singleDownload(ctx context.Context, rawurl, outPath string) error {
 	parsed, err := url.Parse(rawurl) //Parses the URL into parts
 	if err != nil {
 		return err
@@ -173,6 +181,126 @@ func (d *Downloader) Download(ctx context.Context, rawurl, outPath string) error
 	}
 
 	fmt.Fprintf(os.Stderr, "\nDownloaded %s\n", destPath)
+	return nil
+}
+
+func (d *Downloader) concurrentDownload(ctx context.Context, rawurl, outPath string, concurrent int) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawurl, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := d.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.Header.Get("Accept-Ranges") != "bytes" {
+		fmt.Println("Server does not support concurrent download, falling back to single thread")
+		return d.singleDownload(ctx, rawurl, outPath)
+	}
+
+	totalSize, err := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
+	if err != nil {
+		return err
+	}
+
+	chunkSize := totalSize / int64(concurrent)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var written int64
+
+	startTime := time.Now()
+
+	for i := 0; i < concurrent; i++ {
+		wg.Add(1)
+		start := int64(i) * chunkSize
+		end := start + chunkSize - 1
+		if i == concurrent-1 {
+			end = totalSize - 1
+		}
+
+		go func(i int, start, end int64) {
+			defer wg.Done()
+			err := d.downloadChunk(ctx, rawurl, outPath, i, start, end, &mu, &written, totalSize, startTime)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "\nError downloading chunk %d: %v\n", i, err)
+			}
+		}(i, start, end)
+	}
+
+	wg.Wait()
+
+	// Merge files
+	destFile, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	for i := 0; i < concurrent; i++ {
+		partFileName := fmt.Sprintf("%s.part%d", outPath, i)
+		partFile, err := os.Open(partFileName)
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(destFile, partFile)
+		if err != nil {
+			partFile.Close()
+			return err
+		}
+		partFile.Close()
+		os.Remove(partFileName)
+	}
+
+	fmt.Fprintf(os.Stderr, "\nDownloaded %s\n", outPath)
+	return nil
+}
+
+func (d *Downloader) downloadChunk(ctx context.Context, rawurl, outPath string, index int, start, end int64, mu *sync.Mutex, written *int64, totalSize int64, startTime time.Time) error {
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawurl, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+	resp, err := d.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	partFileName := fmt.Sprintf("%s.part%d", outPath, index)
+	partFile, err := os.Create(partFileName)
+	if err != nil {
+		return err
+	}
+	defer partFile.Close()
+
+	buf := make([]byte, 32*1024)
+	for {
+
+		n, err := resp.Body.Read(buf)
+
+		if n > 0 {
+			_, wErr := partFile.Write(buf[:n])
+			if wErr != nil {
+				return wErr
+			}
+			mu.Lock()
+			*written += int64(n)
+			printProgress(*written, totalSize, startTime)
+			mu.Unlock()
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
