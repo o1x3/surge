@@ -190,13 +190,32 @@ func (d *Downloader) singleDownload(ctx context.Context, rawurl, outPath string,
 	if verbose {
 		fmt.Fprintln(os.Stderr, "Starting file copy from response body to temporary file...")
 	}
-	written, err := io.Copy(tmpFile, body) // IMPORTANT: copy from 'body', not resp.Body
-	if err != nil {
-		if verbose {
-			fmt.Fprintf(os.Stderr, "Error during file copy: %v\n", err)
+
+	// Create a TeeReader to simultaneously write to tmpFile and track progress
+	tee := io.TeeReader(body, tmpFile)
+
+	// TODO: look at using io.CopyBuffer for more control
+	// Buffer for copying
+	buf := make([]byte, 32*1024) // 32 KB buffer
+
+	var written int64
+	for {
+		n, readErr := tee.Read(buf)
+		if n > 0 {
+			written += int64(n)
+			d.printProgress(written, resp.ContentLength, start, verbose) // Assuming ContentLength is available
 		}
-		return fmt.Errorf("copy failed: %w", err)
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			if verbose {
+				fmt.Fprintf(os.Stderr, "Error during file copy: %v\n", readErr)
+			}
+			return fmt.Errorf("copy failed: %w", readErr)
+		}
 	}
+
 	if verbose {
 		fmt.Fprintf(os.Stderr, "Finished copying %d bytes to temporary file.\n", written)
 	}
