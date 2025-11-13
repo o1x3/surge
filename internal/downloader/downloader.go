@@ -13,11 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"crypto/md5"
-	"crypto/sha256"
-	"encoding/hex"
-
-	"surge/internal/util"
+	"surge/internal/utils"
 )
 
 type Downloader struct {
@@ -88,7 +84,7 @@ func (d *Downloader) singleDownload(ctx context.Context, rawurl, outPath string,
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	filename, body, err := util.DetermineFilename(rawurl, resp, verbose)
+	filename, body, err := utils.DetermineFilename(rawurl, resp, verbose)
 	if err != nil {
 		return err
 	}
@@ -152,87 +148,10 @@ func (d *Downloader) singleDownload(ctx context.Context, rawurl, outPath string,
 	}
 
 	// Checksum verification
-	if md5sum != "" {
-		if verbose {
-			fmt.Fprintln(os.Stderr, "User provided MD5 checksum. Verifying...")
-		}
-		// Ensure the file pointer is at the beginning before calculating checksum
-		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
-			return fmt.Errorf("failed to seek to beginning of file for MD5 checksum: %w", err)
-		}
-		hasher := md5.New()
-		if _, err := io.Copy(hasher, tmpFile); err != nil {
-			return fmt.Errorf("failed to calculate MD5 checksum: %w", err)
-		}
-		calculatedChecksum := hex.EncodeToString(hasher.Sum(nil))
-		if calculatedChecksum != md5sum {
-			return fmt.Errorf("MD5 checksum mismatch: expected %s, got %s", md5sum, calculatedChecksum)
-		}
-		if verbose {
-			fmt.Fprintln(os.Stderr, "MD5 checksum verified successfully.")
-		}
-	} else if sha256sum != "" {
-		if verbose {
-			fmt.Fprintln(os.Stderr, "User provided SHA256 checksum. Verifying...")
-		}
-		// Ensure the file pointer is at the beginning before calculating checksum
-		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
-			return fmt.Errorf("failed to seek to beginning of file for SHA256 checksum: %w", err)
-		}
-
-		hasher := sha256.New()
-		if _, err := io.Copy(hasher, tmpFile); err != nil {
-			return fmt.Errorf("failed to calculate SHA256 checksum: %w", err)
-		}
-		calculatedChecksum := hex.EncodeToString(hasher.Sum(nil))
-		if calculatedChecksum != sha256sum {
-			return fmt.Errorf("SHA256 checksum mismatch: expected %s, got %s", sha256sum, calculatedChecksum)
-		}
-		if verbose {
-			fmt.Fprintln(os.Stderr, "SHA256 checksum verified successfully.")
-		}
-	} else if serverChecksum := resp.Header.Get("Content-MD5"); serverChecksum != "" {
-		if verbose {
-			fmt.Fprintln(os.Stderr, "Server provided Content-MD5 checksum. Verifying...")
-		}
-		// Ensure the file pointer is at the beginning before calculating checksum
-		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
-			return fmt.Errorf("failed to seek to beginning of file for server MD5 checksum: %w", err)
-		}
-		hasher := md5.New()
-		if _, err := io.Copy(hasher, tmpFile); err != nil {
-			return fmt.Errorf("failed to calculate checksum: %w", err)
-		}
-		calculatedChecksum := hex.EncodeToString(hasher.Sum(nil))
-		if calculatedChecksum != serverChecksum {
-			return fmt.Errorf("checksum mismatch: expected %s, got %s", serverChecksum, calculatedChecksum)
-		}
-		if verbose {
-			fmt.Fprintln(os.Stderr, "Checksum verified successfully.")
-		}
-	} else if serverChecksum := resp.Header.Get("X-Checksum-SHA256"); serverChecksum != "" {
-		if verbose {
-			fmt.Fprintln(os.Stderr, "Server provided X-Checksum-SHA256 checksum. Verifying...")
-		}
-		// Ensure the file pointer is at the beginning before calculating checksum
-		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
-			return fmt.Errorf("failed to seek to beginning of file for server SHA256 checksum: %w", err)
-		}
-		hasher := sha256.New()
-		if _, err := io.Copy(hasher, tmpFile); err != nil {
-			return fmt.Errorf("failed to calculate checksum: %w", err)
-		}
-		calculatedChecksum := hex.EncodeToString(hasher.Sum(nil))
-		if calculatedChecksum != serverChecksum {
-			return fmt.Errorf("checksum mismatch: expected %s, got %s", serverChecksum, calculatedChecksum)
-		}
-		if verbose {
-			fmt.Fprintln(os.Stderr, "Checksum verified successfully.")
-		}
-	} else {
-		if verbose {
-			fmt.Fprintln(os.Stderr, "No checksum provided by server or user. Skipping verification.")
-		}
+	serverMD5 := resp.Header.Get("Content-MD5")
+	serverSHA256 := resp.Header.Get("X-Checksum-SHA256")
+	if err := utils.VerifyChecksum(tmpFile, md5sum, sha256sum, serverMD5, serverSHA256, verbose); err != nil {
+		return err
 	}
 
 	elapsed := time.Since(start)
@@ -240,7 +159,7 @@ func (d *Downloader) singleDownload(ctx context.Context, rawurl, outPath string,
 	fmt.Fprintf(os.Stderr, "\nDownloaded %s in %s (%s/s)\n",
 		outPath,
 		elapsed.Round(time.Second),
-		util.ConvertBytesToHumanReadable(int64(speed*1024)),
+		utils.ConvertBytesToHumanReadable(int64(speed*1024)),
 	)
 
 	// // sync file to disk
@@ -332,7 +251,7 @@ func (d *Downloader) concurrentDownload(ctx context.Context, rawurl, outPath str
 	}
 
 	// Determine the filename using the helper function
-	filename, _, err := util.DetermineFilename(rawurl, resp, verbose)
+	filename, _, err := utils.DetermineFilename(rawurl, resp, verbose)
 	if err != nil {
 		return err
 	}
@@ -402,95 +321,21 @@ func (d *Downloader) concurrentDownload(ctx context.Context, rawurl, outPath str
 	}
 
 	// Checksum verification for concurrent download
-	if md5sum != "" {
-		if verbose {
-			fmt.Fprintln(os.Stderr, "User provided MD5 checksum. Verifying merged file...")
-		}
-		file, err := os.Open(finalDestPath)
-		if err != nil {
-			return fmt.Errorf("failed to open merged file for checksum verification: %w", err)
-		}
-		defer file.Close()
-		hasher := md5.New()
-		if _, err := io.Copy(hasher, file); err != nil {
-			return fmt.Errorf("failed to calculate MD5 checksum of merged file: %w", err)
-		}
-		calculatedChecksum := hex.EncodeToString(hasher.Sum(nil))
-		if calculatedChecksum != md5sum {
-			return fmt.Errorf("MD5 checksum mismatch for merged file: expected %s, got %s", md5sum, calculatedChecksum)
-		}
-		if verbose {
-			fmt.Fprintln(os.Stderr, "MD5 checksum of merged file verified successfully.")
-		}
-	} else if sha256sum != "" {
-		if verbose {
-			fmt.Fprintln(os.Stderr, "User provided SHA256 checksum. Verifying merged file...")
-		}
-		file, err := os.Open(finalDestPath)
-		if err != nil {
-			return fmt.Errorf("failed to open merged file for checksum verification: %w", err)
-		}
-		defer file.Close()
-		hasher := sha256.New()
-		if _, err := io.Copy(hasher, file); err != nil {
-			return fmt.Errorf("failed to calculate SHA256 checksum of merged file: %w", err)
-		}
-		calculatedChecksum := hex.EncodeToString(hasher.Sum(nil))
-		if calculatedChecksum != sha256sum {
-			return fmt.Errorf("SHA256 checksum mismatch for merged file: expected %s, got %s", sha256sum, calculatedChecksum)
-		}
-		if verbose {
-			fmt.Fprintln(os.Stderr, "SHA256 checksum of merged file verified successfully.")
-		}
-	} else if serverChecksum := resp.Header.Get("Content-MD5"); serverChecksum != "" {
-		if verbose {
-			fmt.Fprintln(os.Stderr, "Server provided Content-MD5 checksum. Verifying merged file...")
-		}
-		file, err := os.Open(finalDestPath)
-		if err != nil {
-			return fmt.Errorf("failed to open merged file for checksum verification: %w", err)
-		}
-		defer file.Close()
-		hasher := md5.New()
-		if _, err := io.Copy(hasher, file); err != nil {
-			return fmt.Errorf("failed to calculate checksum of merged file: %w", err)
-		}
-		calculatedChecksum := hex.EncodeToString(hasher.Sum(nil))
-		if calculatedChecksum != serverChecksum {
-			return fmt.Errorf("checksum mismatch for merged file: expected %s, got %s", serverChecksum, calculatedChecksum)
-		}
-		if verbose {
-			fmt.Fprintln(os.Stderr, "Checksum of merged file verified successfully.")
-		}
-	} else if serverChecksum := resp.Header.Get("X-Checksum-SHA256"); serverChecksum != "" {
-		if verbose {
-			fmt.Fprintln(os.Stderr, "Server provided X-Checksum-SHA256 checksum. Verifying merged file...")
-		}
-		file, err := os.Open(finalDestPath)
-		if err != nil {
-			return fmt.Errorf("failed to open merged file for checksum verification: %w", err)
-		}
-		defer file.Close()
-		hasher := sha256.New()
-		if _, err := io.Copy(hasher, file); err != nil {
-			return fmt.Errorf("failed to calculate checksum of merged file: %w", err)
-		}
-		calculatedChecksum := hex.EncodeToString(hasher.Sum(nil))
-		if calculatedChecksum != serverChecksum {
-			return fmt.Errorf("checksum mismatch for merged file: expected %s, got %s", serverChecksum, calculatedChecksum)
-		}
-		if verbose {
-			fmt.Fprintln(os.Stderr, "Checksum of merged file verified successfully.")
-		}
-	} else {
-		if verbose {
-			fmt.Fprintln(os.Stderr, "No checksum provided by server or user for concurrent download. Skipping verification.")
-		}
+	file, err := os.Open(finalDestPath)
+	if err != nil {
+		return fmt.Errorf("failed to open merged file for checksum verification: %w", err)
+	}
+	defer file.Close()
+
+	serverMD5 := resp.Header.Get("Content-MD5")
+	serverSHA256 := resp.Header.Get("X-Checksum-SHA256")
+	if err := utils.VerifyChecksum(file, md5sum, sha256sum, serverMD5, serverSHA256, verbose); err != nil {
+		return err
 	}
 
 	elapsed := time.Since(startTime)
 	speed := float64(totalSize) / 1024.0 / elapsed.Seconds() // KiB/s
-	fmt.Fprintf(os.Stderr, "\nDownloaded %s in %s (%s/s)\n", finalDestPath, elapsed.Round(time.Second), util.ConvertBytesToHumanReadable(int64(speed*1024)))
+	fmt.Fprintf(os.Stderr, "\nDownloaded %s in %s (%s/s)\n", finalDestPath, elapsed.Round(time.Second), utils.ConvertBytesToHumanReadable(int64(speed*1024)))
 	return nil
 }
 
@@ -570,8 +415,8 @@ func (d *Downloader) printProgress(written, total int64, start time.Time, verbos
 
 	if total > 0 {
 		pct := float64(written) / float64(total) * 100.0
-		fmt.Fprintf(os.Stderr, "\r%.2f%% %s/%s (%.1f KiB/s) ETA: %s", pct, util.ConvertBytesToHumanReadable(written), util.ConvertBytesToHumanReadable(total), speed, eta)
+		fmt.Fprintf(os.Stderr, "\r%.2f%% %s/%s (%.1f KiB/s) ETA: %s", pct, utils.ConvertBytesToHumanReadable(written), utils.ConvertBytesToHumanReadable(total), speed, eta)
 	} else {
-		fmt.Fprintf(os.Stderr, "\r%s (%.1f KiB/s)", util.ConvertBytesToHumanReadable(written), speed)
+		fmt.Fprintf(os.Stderr, "\r%s (%.1f KiB/s)", utils.ConvertBytesToHumanReadable(written), speed)
 	}
 }
