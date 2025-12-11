@@ -4,10 +4,21 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"surge/internal/messages"
 )
 
-type Model struct {
+type UIState int
+
+const (
+	DashboardState UIState = iota
+	InputState
+)
+
+type DownloadModel struct {
+	ID          int
 	URL         string
 	Filename    string
 	Total       int64
@@ -20,52 +31,71 @@ type Model struct {
 
 	progress progress.Model
 
-	progressCh chan ProgressMsg
-	done       bool
-	err        error
+	done bool
+	err  error
 }
 
-// NewModel creates a new TUI model
-func NewModel(url string, filename string, total int64, connections int) Model {
-	return Model{
-		URL:         url,
-		Filename:    filename,
-		Total:       total,
-		Downloaded:  0,
-		Speed:       0,
-		Connections: connections,
-		StartTime:   time.Now(),
-		progress:    progress.New(progress.WithDefaultGradient()),
-		done:        false,
-		err:         nil,
-		progressCh:  make(chan ProgressMsg, 10),
+type RootModel struct {
+	downloads    []*DownloadModel
+	width        int
+	height       int
+	state        UIState
+	inputs       []textinput.Model
+	focusedInput int
+	progressChan chan tea.Msg // Single channel for all downloads
+
+	// Navigation
+	cursor int
+}
+
+// NewDownloadModel creates a new download model
+func NewDownloadModel(id int, url string, filename string, total int64) *DownloadModel {
+	return &DownloadModel{
+		ID:        id,
+		URL:       url,
+		Filename:  filename,
+		Total:     total,
+		StartTime: time.Now(),
+		progress:  progress.New(progress.WithDefaultGradient()),
 	}
 }
 
-// GetProgressChannel returns the channel for receiving progress updates
-func (m *Model) GetProgressChannel() chan ProgressMsg {
-	return m.progressCh
+func InitialRootModel() RootModel {
+	// Initialize inputs
+	urlInput := textinput.New()
+	urlInput.Placeholder = "https://example.com/file.zip"
+	urlInput.Focus()
+	urlInput.Width = 50
+	urlInput.Prompt = "URL: "
+
+	pathInput := textinput.New()
+	pathInput.Placeholder = "."
+	pathInput.Width = 50
+	pathInput.Prompt = "Out: "
+
+	return RootModel{
+		downloads:    make([]*DownloadModel, 0),
+		inputs:       []textinput.Model{urlInput, pathInput},
+		state:        DashboardState,
+		progressChan: make(chan tea.Msg, 100),
+	}
 }
 
-// Init initializes the model
-func (m Model) Init() tea.Cmd {
-	return tickCmd()
+func (m RootModel) Init() tea.Cmd {
+	return tea.Batch(
+		tickCmd(),
+		listenForActivity(m.progressChan),
+	)
 }
 
-// tickCmd sends a tick message periodically
+func listenForActivity(sub chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		return <-sub
+	}
+}
+
 func tickCmd() tea.Cmd {
 	return tea.Tick(200*time.Millisecond, func(_ time.Time) tea.Msg {
-		return TickMsg{}
+		return messages.TickMsg{}
 	})
-}
-
-// listenProgress waits for a progress message from the channel
-func (m Model) listenProgress() tea.Cmd {
-	return func() tea.Msg {
-		msg, ok := <-m.progressCh
-		if !ok {
-			return nil
-		}
-		return msg
-	}
 }

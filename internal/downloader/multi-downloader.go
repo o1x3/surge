@@ -14,6 +14,8 @@ import (
 	"surge/internal/utils"
 	"sync"
 	"time"
+
+	"surge/internal/messages"
 )
 
 const (
@@ -108,7 +110,7 @@ func (d *Downloader) newWorker(
 	return true, nil
 }
 
-func (d *Downloader) concurrentDownload(ctx context.Context, rawurl, outPath string, verbose bool, md5sum, sha256sum string) error {
+func (d *Downloader) conburrentDownload(ctx context.Context, rawurl, outPath string, verbose bool, md5sum, sha256sum string) error {
 
 	parsed, err := url.Parse(rawurl) //Parses the URL into parts
 	if err != nil {
@@ -160,7 +162,7 @@ func (d *Downloader) concurrentDownload(ctx context.Context, rawurl, outPath str
 
 	if resp.Header.Get("Accept-Ranges") != "bytes" {
 		fmt.Println("Server does not support concurrent download, falling back to single thread")
-		return d.singleDownload(ctx, rawurl, outPath, verbose, md5sum, sha256sum)
+		return d.singleDownload(ctx, rawurl, outPath, verbose)
 	}
 
 	filename, _, err := utils.DetermineFilename(rawurl, resp, verbose)
@@ -488,6 +490,19 @@ func (d *Downloader) printProgress(written, total int64, start time.Time, verbos
 		avgSpeed = float64(totalSpeed) / float64(len(d.bytesDownloadedPerSecond))
 	}
 	d.mu.Unlock()
+
+	if d.ProgressChan != nil {
+		d.ProgressChan <- messages.ProgressMsg{
+			DownloadID: d.ID,
+			Downloaded: written,
+			Total:      total,
+			Speed:      speed * 1024, // Speed is in KiB/s in calculation above line 474: written/1024/elapsed. So speed*1024 is B/s.
+			// Wait, line 474: speed := float64(written) / 1024.0 / elapsed. This is KiB/s.
+			// TUI expects bytes per second. So speed * 1024.
+			ActiveConnections: activeConnections,
+		}
+		return
+	}
 
 	eta := "N/A"
 	if total > 0 && avgSpeed > 0 {

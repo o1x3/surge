@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"surge/internal/utils"
+
+	"surge/internal/messages"
 )
 
 const (
@@ -163,6 +165,8 @@ func (q *TaskQueue) SplitLargestIfNeeded() bool {
 
 // getInitialConnections returns the starting number of connections based on file size
 func getInitialConnections(fileSize int64) int {
+	// TODO: Use binary search to find optimal number of connections?
+	// TODO: Use a better algorithm to find optimal number of connections?
 	switch {
 	case fileSize < 10*MB:
 		return 1
@@ -274,6 +278,16 @@ func (d *Downloader) concurrentDownload(ctx context.Context, rawurl, outPath str
 		return fmt.Errorf("invalid Content-Length: %w", err)
 	}
 
+	if d.ProgressChan != nil {
+		filename, _, _ := utils.DetermineFilename(rawurl, resp, false)
+		d.ProgressChan <- messages.DownloadStartedMsg{
+			DownloadID: d.ID,
+			URL:        rawurl,
+			Filename:   filename,
+			Total:      fileSize,
+		}
+	}
+
 	// 3. Determine connections and chunk size
 	numConns := getInitialConnections(fileSize)
 	chunkSize := calculateChunkSize(fileSize, numConns)
@@ -376,6 +390,16 @@ func (d *Downloader) concurrentDownload(ctx context.Context, rawurl, outPath str
 		utils.ConvertBytesToHumanReadable(fileSize),
 		elapsed.Round(time.Millisecond),
 		utils.ConvertBytesToHumanReadable(int64(speed)))
+
+	if d.ProgressChan != nil {
+		filename, _, _ := utils.DetermineFilename(rawurl, resp, false)
+		d.ProgressChan <- messages.DownloadCompleteMsg{
+			DownloadID: d.ID,
+			Filename:   filename,
+			Elapsed:    elapsed,
+			Total:      fileSize,
+		}
+	}
 
 	return nil
 }
