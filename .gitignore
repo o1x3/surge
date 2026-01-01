@@ -1,2 +1,9 @@
 surge
 debug.log
+.python-version
+main.py
+pyproject.toml
+10GB.bin
+1GB.bin
+uv.lock
+speed_graph.png
