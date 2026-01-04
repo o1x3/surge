@@ -202,6 +202,31 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(cmds...)
 			}
 
+			// Delete download
+			if msg.String() == "d" || msg.String() == "x" {
+				if m.cursor >= 0 && m.cursor < len(m.downloads) {
+					d := m.downloads[m.cursor]
+
+					// Cancel if active
+					m.Pool.Cancel(d.ID)
+
+					// Delete state files
+					if d.URL != "" {
+						surgeDir := m.PWD + "/.surge"
+						_ = downloader.DeleteStateByDir(surgeDir, d.URL)
+					}
+
+					// Remove from list
+					m.downloads = append(m.downloads[:m.cursor], m.downloads[m.cursor+1:]...)
+
+					// Adjust cursor
+					if m.cursor >= len(m.downloads) && m.cursor > 0 {
+						m.cursor--
+					}
+				}
+				return m, nil
+			}
+
 		case DetailState:
 			if msg.String() == "esc" || msg.String() == "q" || msg.String() == "enter" {
 				m.state = DashboardState

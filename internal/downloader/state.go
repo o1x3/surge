@@ -113,6 +113,24 @@ func DeleteState(destPath string, url string) error {
 	return nil
 }
 
+// DeleteStateByDir removes state file using surge directory directly (for TUI delete)
+func DeleteStateByDir(surgeDir string, url string) error {
+	urlHash := URLHash(url)
+	statePath := filepath.Join(surgeDir, urlHash+".json")
+
+	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to delete state file: %w", err)
+	}
+
+	// Remove from master list
+	_ = RemoveFromMasterList(surgeDir, urlHash)
+
+	// Try to remove the .surge directory if it's empty
+	_ = os.Remove(surgeDir)
+
+	return nil
+}
+
 // ================== Master List Functions ==================
 
 // MasterList holds all tracked downloads

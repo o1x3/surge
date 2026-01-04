@@ -107,7 +107,7 @@ func (m RootModel) View() string {
 		header,
 		listContent,
 		"",
-		lipgloss.NewStyle().Foreground(ColorSubtext).Padding(0, 1).Render("[g] Add  [p] Pause/Resume  [Enter] Details  [q] Quit"),
+		lipgloss.NewStyle().Foreground(ColorSubtext).Padding(0, 1).Render("[g] Add  [p] Pause/Resume  [d] Delete  [Enter] Details  [q] Quit"),
 	)
 }
 

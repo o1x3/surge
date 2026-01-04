@@ -85,6 +85,30 @@ func (p *WorkerPool) PauseAll() {
 	}
 }
 
+// Cancel cancels and removes a download by ID
+func (p *WorkerPool) Cancel(downloadID int) {
+	p.mu.Lock()
+	ad, exists := p.downloads[downloadID]
+	if exists {
+		delete(p.downloads, downloadID)
+	}
+	p.mu.Unlock()
+
+	if !exists || ad == nil {
+		return
+	}
+
+	// Cancel the context to stop workers
+	if ad.cancel != nil {
+		ad.cancel()
+	}
+
+	// Mark as done to stop polling
+	if ad.config.State != nil {
+		ad.config.State.Done.Store(true)
+	}
+}
+
 // Resume resumes a paused download by ID
 func (p *WorkerPool) Resume(downloadID int) {
 	p.mu.RLock()
