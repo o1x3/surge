@@ -318,23 +318,23 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath st
 	}
 	defer outFile.Close()
 
-	// Preallocate file to avoid fragmentation
-	if err := outFile.Truncate(fileSize); err != nil {
-		return fmt.Errorf("failed to preallocate file: %w", err)
-	}
-
-	// Create task queue - check for saved state first (resume case)
+	// Check for saved state BEFORE truncating (resume case)
 	var tasks []Task
 	savedState, err := LoadState(destPath, rawurl)
-	if err == nil && savedState != nil && len(savedState.Tasks) > 0 {
-		// Resume: use saved tasks and reset downloaded counter
+	isResume := err == nil && savedState != nil && len(savedState.Tasks) > 0
+
+	if isResume {
+		// Resume: use saved tasks and restore downloaded counter
 		tasks = savedState.Tasks
 		if d.State != nil {
 			d.State.Downloaded.Store(savedState.Downloaded)
 		}
 		utils.Debug("Resuming from saved state: %d tasks, %d bytes downloaded", len(tasks), savedState.Downloaded)
 	} else {
-		// Fresh download: create new tasks
+		// Fresh download: preallocate file and create new tasks
+		if err := outFile.Truncate(fileSize); err != nil {
+			return fmt.Errorf("failed to preallocate file: %w", err)
+		}
 		tasks = createTasks(fileSize, chunkSize)
 	}
 	queue := NewTaskQueue()
@@ -529,6 +529,17 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 			lastErr = d.downloadTask(ctx, rawurl, file, activeTask, buf, verbose, client)
 			utils.Debug("Worker %d: Task offset=%d length=%d took %v", id, task.Offset, task.Length, time.Since(taskStart))
 
+			// Check for cancellation BEFORE deleting from activeTasks
+			// This preserves active task info for pause handler to collect
+			if ctx.Err() != nil {
+				// DON'T delete from activeTasks - pause handler needs it
+				if d.State != nil {
+					d.State.ActiveWorkers.Add(-1)
+				}
+				return ctx.Err()
+			}
+
+			// Only delete from activeTasks on normal completion (not cancelled)
 			d.activeMu.Lock()
 			delete(d.activeTasks, id)
 			d.activeMu.Unlock()
@@ -542,13 +553,6 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 					// The stolen part is already in the queue
 				}
 				break
-			}
-
-			if ctx.Err() != nil {
-				if d.State != nil {
-					d.State.ActiveWorkers.Add(-1)
-				}
-				return ctx.Err()
 			}
 		}
 
