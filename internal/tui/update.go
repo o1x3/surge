@@ -20,7 +20,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle download request from HTTP server
 		path := msg.Path
 		if path == "" {
-			path = "downloads/"
+			path = "."
 		}
 
 		nextID := m.NextDownloadID
@@ -148,7 +148,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.focusedInput = 0
 				m.inputs[0].SetValue("")
 				m.inputs[0].Focus()
-				m.inputs[1].SetValue("downloads/")
+				m.inputs[1].SetValue(".")
 				m.inputs[1].Blur()
 				m.inputs[2].SetValue("")
 				m.inputs[2].Blur()
@@ -268,7 +268,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				path := m.inputs[1].Value()
 				if path == "" {
-					path = "downloads/"
+					path = "."
 				}
 				// filename := m.inputs[2].Value() // Will use later
 				m.state = DashboardState

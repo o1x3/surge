@@ -65,6 +65,10 @@ type ActiveTask struct {
 	StartTime    time.Time          // When this task started
 	Cancel       context.CancelFunc // Cancel function to abort this task
 	SpeedMu      sync.Mutex         // Protects Speed field
+
+	// Sliding window for recent speed tracking
+	WindowStart time.Time // When current measurement window started
+	WindowBytes int64     // Bytes downloaded in current window (atomic)
 }
 
 // TaskQueue is a thread-safe work-stealing queue
@@ -207,7 +211,7 @@ func getInitialConnections(fileSize int64) int {
 	case fileSize < 1*GB:
 		return 6
 	default:
-		return 16
+		return 40
 	}
 }
 
@@ -542,6 +546,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 				LastActivity:  now.UnixNano(),
 				StartTime:     now,
 				Cancel:        taskCancel,
+				WindowStart:   now, // Initialize sliding window
 			}
 			d.activeMu.Lock()
 			d.activeTasks[id] = activeTask
@@ -552,7 +557,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 			taskCancel()
 			utils.Debug("Worker %d: Task offset=%d length=%d took %v", id, task.Offset, task.Length, time.Since(taskStart))
 
-			// Check for cancellation BEFORE deleting from activeTasks
+			// Check for PARENT context cancellation (pause/shutdown)
 			// This preserves active task info for pause handler to collect
 			if ctx.Err() != nil {
 				// DON'T delete from activeTasks - pause handler needs it
@@ -560,6 +565,25 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 					d.State.ActiveWorkers.Add(-1)
 				}
 				return ctx.Err()
+			}
+
+			// Check if TASK context was cancelled (health monitor killed this task)
+			// but parent context is still fine
+			if taskCtx.Err() != nil && lastErr != nil {
+				// Health monitor cancelled this task - re-queue REMAINING work only
+				current := atomic.LoadInt64(&activeTask.CurrentOffset)
+				stopAt := task.Offset + task.Length
+				if current < stopAt {
+					remainingTask := Task{Offset: current, Length: stopAt - current}
+					queue.Push(remainingTask)
+					utils.Debug("Worker %d: health-cancelled task requeued (remaining: %d bytes from offset %d)",
+						id, stopAt-current, current)
+				}
+				// Delete from active tasks and move to next task (don't retry from scratch)
+				d.activeMu.Lock()
+				delete(d.activeTasks, id)
+				d.activeMu.Unlock()
+				break // Exit retry loop, get next task
 			}
 
 			// Only delete from activeTasks on normal completion (not cancelled)
@@ -665,19 +689,23 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 			now := time.Now()
 			offset += int64(readSoFar)
 			atomic.StoreInt64(&activeTask.CurrentOffset, offset)
+			atomic.AddInt64(&activeTask.WindowBytes, int64(readSoFar))
 
-			// Update EMA speed
-			elapsed := now.Sub(activeTask.StartTime).Seconds()
-			if elapsed > 0 {
-				bytesDownloaded := offset - activeTask.Task.Offset
-				instantSpeed := float64(bytesDownloaded) / elapsed
+			// Update EMA speed using sliding window (2 second window)
+			windowElapsed := now.Sub(activeTask.WindowStart).Seconds()
+			if windowElapsed >= 2.0 {
+				windowBytes := atomic.SwapInt64(&activeTask.WindowBytes, 0)
+				recentSpeed := float64(windowBytes) / windowElapsed
+
 				activeTask.SpeedMu.Lock()
 				if activeTask.Speed == 0 {
-					activeTask.Speed = instantSpeed
+					activeTask.Speed = recentSpeed
 				} else {
-					activeTask.Speed = (1-speedEMAAlpha)*activeTask.Speed + speedEMAAlpha*instantSpeed
+					activeTask.Speed = (1-speedEMAAlpha)*activeTask.Speed + speedEMAAlpha*recentSpeed
 				}
 				activeTask.SpeedMu.Unlock()
+
+				activeTask.WindowStart = now // Reset window
 			}
 
 			// Update progress via shared state only (removed duplicate tracking)
@@ -814,14 +842,18 @@ func (d *ConcurrentDownloader) checkWorkerHealth() {
 		}
 
 		// Check for slow worker
+		// Only cancel if: below threshold AND below minimum absolute speed
 		if meanSpeed > 0 {
 			active.SpeedMu.Lock()
 			workerSpeed := active.Speed
 			active.SpeedMu.Unlock()
 
-			if workerSpeed > 0 && workerSpeed < slowWorkerThreshold*meanSpeed {
-				utils.Debug("Health: Worker %d slow (%.2f KB/s vs mean %.2f KB/s), cancelling",
-					workerID, workerSpeed/1024, meanSpeed/1024)
+			isBelowThreshold := workerSpeed > 0 && workerSpeed < slowWorkerThreshold*meanSpeed
+			isBelowMinimum := workerSpeed < float64(minAbsoluteSpeed)
+
+			if isBelowThreshold && isBelowMinimum {
+				utils.Debug("Health: Worker %d slow (%.2f KB/s vs mean %.2f KB/s, min %.2f KB/s), cancelling",
+					workerID, workerSpeed/1024, meanSpeed/1024, float64(minAbsoluteSpeed)/1024)
 				if active.Cancel != nil {
 					active.Cancel()
 				}
