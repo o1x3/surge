@@ -49,12 +49,14 @@ func (r *ProgressReporter) PollCmd() tea.Cmd {
 		}
 
 		// Get current progress
-		downloaded, total, elapsed, connections := r.state.GetProgress()
+		downloaded, total, elapsed, connections, sessionStart := r.state.GetProgress()
 
 		// Calculate speed with EMA smoothing
+		// Use session-specific bytes to avoid speed spike on resume
+		sessionDownloaded := downloaded - sessionStart
 		var instantSpeed float64
-		if elapsed.Seconds() > 0 {
-			instantSpeed = float64(downloaded) / elapsed.Seconds()
+		if elapsed.Seconds() > 0 && sessionDownloaded > 0 {
+			instantSpeed = float64(sessionDownloaded) / elapsed.Seconds()
 		}
 
 		if r.lastSpeed == 0 {

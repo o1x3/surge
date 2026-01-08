@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -16,6 +17,9 @@ type ProgressState struct {
 	Error         atomic.Pointer[error]
 	Paused        atomic.Bool
 	CancelFunc    context.CancelFunc
+
+	SessionStartBytes int64      // SessionStartBytes tracks how many bytes were already downloaded when the current session started
+	mu                sync.Mutex // Protects TotalSize, StartTime, SessionStartBytes
 }
 
 func NewProgressState(id int, totalSize int64) *ProgressState {
@@ -27,8 +31,11 @@ func NewProgressState(id int, totalSize int64) *ProgressState {
 }
 
 func (ps *ProgressState) SetTotalSize(size int64) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
 	ps.TotalSize = size
-	ps.StartTime = time.Now() // Reset start time when we know the real size
+	ps.SessionStartBytes = ps.Downloaded.Load()
+	ps.StartTime = time.Now()
 }
 
 func (ps *ProgressState) SetError(err error) {
@@ -42,11 +49,15 @@ func (ps *ProgressState) GetError() error {
 	return nil
 }
 
-func (ps *ProgressState) GetProgress() (downloaded int64, total int64, elapsed time.Duration, connections int32) {
+func (ps *ProgressState) GetProgress() (downloaded int64, total int64, elapsed time.Duration, connections int32, sessionStartBytes int64) {
 	downloaded = ps.Downloaded.Load()
+	connections = ps.ActiveWorkers.Load()
+
+	ps.mu.Lock()
 	total = ps.TotalSize
 	elapsed = time.Since(ps.StartTime)
-	connections = ps.ActiveWorkers.Load()
+	sessionStartBytes = ps.SessionStartBytes
+	ps.mu.Unlock()
 	return
 }
 
