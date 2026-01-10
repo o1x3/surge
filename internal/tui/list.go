@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"io"
-	"strings"
 
 	"surge/internal/utils"
 
@@ -97,7 +96,7 @@ func newDownloadDelegate() downloadDelegate {
 	}
 }
 
-func (d downloadDelegate) Height() int  { return 3 }
+func (d downloadDelegate) Height() int  { return 2 }
 func (d downloadDelegate) Spacing() int { return 1 }
 
 func (d downloadDelegate) Update(msg tea.Msg, m *list.Model) tea.Cmd {
@@ -110,7 +109,6 @@ func (d downloadDelegate) Render(w io.Writer, m list.Model, index int, listItem 
 		return
 	}
 
-	download := i.download
 	isSelected := index == m.Index()
 
 	// Title styling
@@ -121,18 +119,6 @@ func (d downloadDelegate) Render(w io.Writer, m list.Model, index int, listItem 
 	// Description styling
 	descStyle := lipgloss.NewStyle().
 		Foreground(ColorGray)
-
-	// Status icon color
-	iconColor := ColorNeonCyan
-	if download.done {
-		iconColor = lipgloss.Color("#50fa7b") // Green
-	}
-	if download.paused {
-		iconColor = lipgloss.Color("#ffb86c") // Orange
-	}
-	if download.err != nil {
-		iconColor = lipgloss.Color("#ff5555") // Red
-	}
 
 	// Selected item styling
 	if isSelected {
@@ -150,28 +136,11 @@ func (d downloadDelegate) Render(w io.Writer, m list.Model, index int, listItem 
 		prefix = "  "
 	}
 
-	// Progress bar mini
+	// Truncate title if needed
 	width := m.Width() - 6
 	if width < 20 {
 		width = 20
 	}
-
-	pct := 0.0
-	if download.Total > 0 {
-		pct = float64(download.Downloaded) / float64(download.Total)
-	}
-	progressWidth := int(float64(width-4) * pct)
-	if progressWidth < 0 {
-		progressWidth = 0
-	}
-
-	// Build progress bar
-	filledBar := strings.Repeat("█", progressWidth)
-	emptyBar := strings.Repeat("░", width-4-progressWidth)
-	progressBar := lipgloss.NewStyle().Foreground(iconColor).Render(filledBar) +
-		lipgloss.NewStyle().Foreground(ColorGray).Render(emptyBar)
-
-	// Truncate title if needed
 	title := i.Title()
 	maxTitleWidth := width - 10
 	if len(title) > maxTitleWidth {
@@ -181,9 +150,8 @@ func (d downloadDelegate) Render(w io.Writer, m list.Model, index int, listItem 
 	// Render lines
 	line1 := prefix + titleStyle.Render(title)
 	line2 := prefix + descStyle.Render(i.Description())
-	line3 := prefix + progressBar
 
-	fmt.Fprintf(w, "%s\n%s\n%s", line1, line2, line3)
+	fmt.Fprintf(w, "%s\n%s", line1, line2)
 }
 
 // ShortHelp returns keybindings to show in the mini help view
@@ -206,7 +174,7 @@ func NewDownloadList(width, height int) list.Model {
 	l.SetShowTitle(false) // Tab bar already shows the category
 	l.SetShowStatusBar(true)
 	l.SetFilteringEnabled(true)
-	l.SetShowHelp(true)
+	l.SetShowHelp(false)
 	l.SetShowPagination(true)
 
 	// Style the list
