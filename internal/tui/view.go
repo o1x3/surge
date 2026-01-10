@@ -24,9 +24,9 @@ func (m RootModel) View() string {
 	// These overlays sit on top of the dashboard or replace it
 
 	if m.state == InputState {
-		labelStyle := lipgloss.NewStyle().Width(10).Foreground(ColorGray)
+		labelStyle := lipgloss.NewStyle().Width(10).Foreground(ColorLightGray)
 		// Centered popup - compact layout
-		hintStyle := lipgloss.NewStyle().MarginLeft(1).Foreground(ColorGray) // Dimmed
+		hintStyle := lipgloss.NewStyle().MarginLeft(1).Foreground(ColorLightGray) // Secondary
 		if m.focusedInput == 1 {
 			hintStyle = lipgloss.NewStyle().MarginLeft(1).Foreground(ColorNeonPink) // Highlighted
 		}
@@ -43,7 +43,7 @@ func (m RootModel) View() string {
 			pathLine,
 			lipgloss.JoinHorizontal(lipgloss.Left, labelStyle.Render("Filename:"), m.inputs[2].View()),
 			"",
-			lipgloss.NewStyle().Foreground(ColorGray).Render("[Enter] Start  [Esc] Cancel"),
+			lipgloss.NewStyle().Foreground(ColorLightGray).Render("[Enter] Start  [Esc] Cancel"),
 		)
 
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
@@ -55,11 +55,11 @@ func (m RootModel) View() string {
 		pickerContent := lipgloss.JoinVertical(lipgloss.Left,
 			TitleStyle.Render("SELECT DIRECTORY"),
 			"",
-			lipgloss.NewStyle().Foreground(ColorGray).Render(m.filepicker.CurrentDirectory),
+			lipgloss.NewStyle().Foreground(ColorLightGray).Render(m.filepicker.CurrentDirectory),
 			"",
 			m.filepicker.View(),
 			"",
-			lipgloss.NewStyle().Foreground(ColorGray).Render("[.] Select Here  [H] Downloads  [Enter] Open  [Esc] Cancel"),
+			lipgloss.NewStyle().Foreground(ColorLightGray).Render("[.] Select Here  [H] Downloads  [Enter] Open  [Esc] Cancel"),
 		)
 
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
@@ -73,7 +73,7 @@ func (m RootModel) View() string {
 			"",
 			lipgloss.NewStyle().Foreground(ColorNeonPurple).Bold(true).Render(truncateString(m.duplicateInfo, 50)),
 			"",
-			lipgloss.NewStyle().Foreground(ColorGray).Render("[C] Continue  [F] Focus Existing  [X] Cancel"),
+			lipgloss.NewStyle().Foreground(ColorLightGray).Render("[C] Continue  [F] Focus Existing  [X] Cancel"),
 		)
 
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
@@ -117,7 +117,7 @@ func (m RootModel) View() string {
 
 	headerContent := lipgloss.JoinVertical(lipgloss.Left,
 		LogoStyle.Render(logoText),
-		lipgloss.NewStyle().Foreground(ColorGray).Render(statsText),
+		lipgloss.NewStyle().Foreground(ColorLightGray).Render(statsText),
 	)
 
 	// Use PaneStyle for consistent borders with the graph box
@@ -157,8 +157,16 @@ func (m RootModel) View() string {
 	// Tab Bar
 	tabBar := renderTabs(m.activeTab)
 
-	// Render the bubbles list
-	listContent := m.list.View()
+	// Render the bubbles list or centered empty message
+	var listContent string
+	if len(m.list.Items()) == 0 {
+		// Center "No downloads" like the right pane
+		listContentHeight := bottomHeight - 6 // Account for tab bar and borders
+		listContent = lipgloss.Place(leftWidth-4, listContentHeight, lipgloss.Center, lipgloss.Center,
+			lipgloss.NewStyle().Foreground(ColorNeonCyan).Render("No downloads"))
+	} else {
+		listContent = m.list.View()
+	}
 
 	listBox := ListStyle.
 		Width(leftWidth).
@@ -174,7 +182,7 @@ func (m RootModel) View() string {
 		detailContent = renderFocusedDetails(d, rightWidth-4)
 	} else {
 		detailContent = lipgloss.Place(rightWidth-4, bottomHeight-4, lipgloss.Center, lipgloss.Center,
-			lipgloss.NewStyle().Foreground(ColorGray).Render("No Download Selected"))
+			lipgloss.NewStyle().Foreground(ColorNeonCyan).Render("No Download Selected"))
 	}
 
 	detailBox := DetailStyle.
@@ -196,7 +204,7 @@ func (m RootModel) View() string {
 		footer = lipgloss.Place(m.width, 1, lipgloss.Center, lipgloss.Center,
 			NotificationStyle.Render(m.notification))
 	} else {
-		footer = lipgloss.NewStyle().Foreground(ColorGray).Padding(0, 1).Render(" [G] Add  [P] Pause  [D] Delete  [/] Filter  [Q] Quit")
+		footer = lipgloss.NewStyle().Foreground(ColorLightGray).Padding(0, 1).Render(" [G] Add  [P] Pause  [D] Delete  [/] Filter  [Q] Quit")
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left,
@@ -231,7 +239,7 @@ func renderFocusedDetails(d *DownloadModel, w int) string {
 		lipgloss.JoinHorizontal(lipgloss.Left, StatsLabelStyle.Render("Conns:"), StatsValueStyle.Render(fmt.Sprintf("%d", d.Connections))),
 		lipgloss.JoinHorizontal(lipgloss.Left, StatsLabelStyle.Render("Elapsed:"), StatsValueStyle.Render(d.Elapsed.Round(time.Second).String())),
 		"",
-		lipgloss.JoinHorizontal(lipgloss.Left, StatsLabelStyle.Render("URL:"), lipgloss.NewStyle().Foreground(ColorGray).Render(truncateString(d.URL, w-10))),
+		lipgloss.JoinHorizontal(lipgloss.Left, StatsLabelStyle.Render("URL:"), lipgloss.NewStyle().Foreground(ColorLightGray).Render(truncateString(d.URL, w-10))),
 	)
 }
 

@@ -118,7 +118,7 @@ func (d downloadDelegate) Render(w io.Writer, m list.Model, index int, listItem 
 
 	// Description styling
 	descStyle := lipgloss.NewStyle().
-		Foreground(ColorGray)
+		Foreground(ColorLightGray)
 
 	// Selected item styling
 	if isSelected {
@@ -172,7 +172,7 @@ func NewDownloadList(width, height int) list.Model {
 
 	l := list.New([]list.Item{}, delegate, width, height)
 	l.SetShowTitle(false) // Tab bar already shows the category
-	l.SetShowStatusBar(true)
+	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(false)
 	l.SetShowPagination(true)
@@ -189,9 +189,9 @@ func NewDownloadList(width, height int) list.Model {
 	l.Styles.FilterCursor = lipgloss.NewStyle().
 		Foreground(ColorNeonPink)
 
-	// No items message
+	// No items message - bright color for cyberpunk theme
 	l.Styles.NoItems = lipgloss.NewStyle().
-		Foreground(ColorGray).
+		Foreground(ColorNeonCyan).
 		Padding(2, 0)
 
 	l.SetStatusBarItemName("download", "downloads")

@@ -10,6 +10,7 @@ var (
 	ColorNeonCyan   = lipgloss.Color("#8be9fd")
 	ColorDarkGray   = lipgloss.Color("#282a36") // Background
 	ColorGray       = lipgloss.Color("#44475a") // Borders
+	ColorLightGray  = lipgloss.Color("#a9b1d6") // Brighter text for secondary info
 	ColorWhite      = lipgloss.Color("#f8f8f2")
 
 	// === Layout Styles ===
@@ -60,7 +61,7 @@ var (
 			Bold(true)
 
 	TabStyle = lipgloss.NewStyle().
-			Foreground(ColorGray).
+			Foreground(ColorLightGray).
 			Padding(0, 1)
 
 	ActiveTabStyle = lipgloss.NewStyle().
@@ -71,7 +72,7 @@ var (
 			Bold(true)
 
 	StatsLabelStyle = lipgloss.NewStyle().
-			Foreground(ColorGray).
+			Foreground(ColorNeonCyan).
 			Width(12)
 
 	StatsValueStyle = lipgloss.NewStyle().
