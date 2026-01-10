@@ -145,13 +145,11 @@ func (m RootModel) View() string {
 	}
 	currentSpeedStr := fmt.Sprintf("%.2f MB/s", currentSpeed)
 
-	graphBox := GraphStyle.
-		Width(rightWidth).
-		Height(topHeight).
-		Render(lipgloss.JoinVertical(lipgloss.Right,
-			graphContent,
-			lipgloss.NewStyle().Foreground(ColorNeonPink).Bold(true).Render(currentSpeedStr),
-		))
+	speedContent := lipgloss.JoinVertical(lipgloss.Right,
+		graphContent,
+		lipgloss.NewStyle().Foreground(ColorNeonPink).Bold(true).Render(currentSpeedStr),
+	)
+	graphBox := renderBtopBox("speed", speedContent, rightWidth, topHeight, ColorNeonCyan)
 
 	// --- SECTION 3: DOWNLOAD LIST (Bottom Left) ---
 	// Tab Bar
@@ -436,7 +434,7 @@ func renderBtopBox(title string, content string, width, height int, borderColor 
 		remainingWidth = 0
 	}
 
-	topBorder := topLeft + horizontal +
+	topBorder := lipgloss.NewStyle().Foreground(borderColor).Render(topLeft+horizontal) +
 		lipgloss.NewStyle().Foreground(ColorNeonCyan).Bold(true).Render(titleText) +
 		lipgloss.NewStyle().Foreground(borderColor).Render(strings.Repeat(horizontal, remainingWidth)) +
 		lipgloss.NewStyle().Foreground(borderColor).Render(topRight)
