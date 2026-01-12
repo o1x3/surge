@@ -389,6 +389,14 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							_ = downloader.DeleteStateByURL(dl.URL)
 						}
 
+						// Delete partial/incomplete files (only for non-completed downloads)
+						if !dl.done && dl.Destination != "" {
+							// Delete the .surge partial file
+							_ = os.Remove(dl.Destination + downloader.IncompleteSuffix)
+							// Also try to delete the destination in case it exists
+							_ = os.Remove(dl.Destination)
+						}
+
 						// Remove from list
 						m.downloads = append(m.downloads[:realIdx], m.downloads[realIdx+1:]...)
 					}
