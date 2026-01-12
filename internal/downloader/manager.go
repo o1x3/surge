@@ -157,18 +157,18 @@ func uniqueFilePath(path string) string {
 // TUIDownload is the main entry point for TUI downloads
 func TUIDownload(ctx context.Context, cfg DownloadConfig) error {
 
-	// Start download timer
-	start := time.Now()
-	defer func() {
-		utils.Debug("Download %s completed in %v", cfg.URL, time.Since(start))
-	}()
-
 	// Probe server once to get all metadata
 	probe, err := probeServer(ctx, cfg.URL, cfg.Filename)
 	if err != nil {
 		utils.Debug("Probe failed: %v", err)
 		return err
 	}
+
+	// Start download timer (exclude probing time)
+	start := time.Now()
+	defer func() {
+		utils.Debug("Download %s completed in %v", cfg.URL, time.Since(start))
+	}()
 
 	// Construct proper output path
 	destPath := cfg.OutputPath

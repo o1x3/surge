@@ -119,6 +119,8 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				d.Total = msg.Total
 				d.URL = msg.URL
 				d.Destination = msg.DestPath
+				// Reset start time to exclude probing
+				d.StartTime = time.Now()
 				// Update the progress state with real total size
 				d.state.SetTotalSize(msg.Total)
 				// Start polling for this download

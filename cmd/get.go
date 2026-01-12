@@ -41,6 +41,8 @@ func runHeadless(ctx context.Context, url, outPath string, verbose bool) error {
 	for msg := range eventCh {
 		switch m := msg.(type) {
 		case messages.DownloadStartedMsg:
+			// Reset start time to exclude probing time
+			startTime = time.Now()
 			totalSize = m.Total
 			fmt.Fprintf(os.Stderr, "Downloading: %s (%s)\n", m.Filename, utils.ConvertBytesToHumanReadable(totalSize))
 		case messages.ProgressMsg:

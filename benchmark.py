@@ -220,12 +220,27 @@ def benchmark_surge(project_dir: Path, url: str, output_dir: Path) -> BenchmarkR
     start = time.perf_counter()
     success, output = run_command([
         str(surge_bin), "get", url,
-        "--path", str(output_dir),  # Download directory
-        "--headless",               # No TUI for benchmarking
-        "-c", "16",                 # Use concurrent connections
+        "--output", str(output_dir),  # Download directory
+        # "--headless",               # Removed as it's default/unrecognized
+        # "-c", "16",                 # Removed as concurrent defaults are dynamic or strictly internal
     ], timeout=600)
     elapsed = time.perf_counter() - start
     
+    # Try to parse the actual download time from Surge output (excluding probing)
+    # Output format: "Complete: 1.0 GB in 5.2s (196.34 MB/s)" OR "... in 500ms ..."
+    import re
+    actual_time = elapsed
+    match = re.search(r"in ([\d\.]+)(m?s)", output)
+    if match:
+        try:
+            val = float(match.group(1))
+            unit = match.group(2)
+            if unit == "ms":
+                val /= 1000.0
+            actual_time = val
+        except ValueError:
+            pass
+
     # Find downloaded file (surge uses original filename)
     downloaded_files = list(output_dir.glob("*.bin")) + list(output_dir.glob("*MB*")) + list(output_dir.glob("*.zip"))
     file_size = 0
@@ -235,9 +250,9 @@ def benchmark_surge(project_dir: Path, url: str, output_dir: Path) -> BenchmarkR
             cleanup_file(f)
     
     if not success:
-        return BenchmarkResult("surge", False, elapsed, file_size, output[:200])
+        return BenchmarkResult("surge", False, actual_time, file_size, output[:200])
     
-    return BenchmarkResult("surge", True, elapsed, file_size)
+    return BenchmarkResult("surge", True, actual_time, file_size)
 
 
 def benchmark_aria2(motrix_extra_dir: Optional[Path], url: str, output_dir: Path) -> BenchmarkResult:
