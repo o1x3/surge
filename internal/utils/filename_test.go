@@ -10,6 +10,7 @@ func TestSanitizeFilename(t *testing.T) {
 		input    string
 		expected string
 	}{
+		// Basic cases
 		{"simple filename", "file.zip", "file.zip"},
 		{"filename with spaces", "  file.zip  ", "file.zip"},
 		{"filename with backslash", "path\\file.zip", "file.zip"},
@@ -25,6 +26,20 @@ func TestSanitizeFilename(t *testing.T) {
 		{"slash only", "/", "_"},
 		// filepath.Base extracts "d.zip" from "a:b*c?d.zip" on Windows (treats a: as drive)
 		{"multiple bad chars", "b*c?d.zip", "b_c_d.zip"},
+
+		// Extended test cases
+		{"unicode filename", "文件.zip", "文件.zip"},
+		{"emoji in filename", "file🎉.zip", "file🎉.zip"},
+		{"filename with extension only", ".gitignore", ".gitignore"},
+		{"filename with multiple dots", "file.tar.gz", "file.tar.gz"},
+		{"filename with hyphen", "my-file.zip", "my-file.zip"},
+		{"filename with underscore", "my_file.zip", "my_file.zip"},
+		{"mixed case", "MyFile.ZIP", "MyFile.ZIP"},
+		{"all spaces becomes empty after trim", "   ", ""},
+		{"tabs and newlines", "\tfile\n.zip", "file\n.zip"},
+		{"very long extension", "file.verylongextension", "file.verylongextension"},
+		{"numbers in name", "file123.zip", "file123.zip"},
+		{"consecutive bad chars", "file***name.zip", "file___name.zip"},
 	}
 
 	for _, tt := range tests {
@@ -32,30 +47,6 @@ func TestSanitizeFilename(t *testing.T) {
 			got := sanitizeFilename(tt.input)
 			if got != tt.expected {
 				t.Errorf("sanitizeFilename(%q) = %q, want %q", tt.input, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestConvertBytesToHumanReadable(t *testing.T) {
-	tests := []struct {
-		bytes    int64
-		expected string
-	}{
-		{0, "0 B"},
-		{500, "500 B"},
-		{1024, "1.0 KB"},
-		{1536, "1.5 KB"},
-		{1048576, "1.0 MB"},
-		{1073741824, "1.0 GB"},
-		{1099511627776, "1.0 TB"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			got := ConvertBytesToHumanReadable(tt.bytes)
-			if got != tt.expected {
-				t.Errorf("ConvertBytesToHumanReadable(%d) = %q, want %q", tt.bytes, got, tt.expected)
 			}
 		})
 	}

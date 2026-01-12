@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -63,6 +64,95 @@ func TestEnsureDirs(t *testing.T) {
 			t.Errorf("Error checking directory %s: %v", dir, err)
 		} else if !info.IsDir() {
 			t.Errorf("Path exists but is not a directory: %s", dir)
+		}
+	}
+}
+
+// Extended tests for cross-platform path handling
+
+func TestGetSurgeDir_AbsolutePath(t *testing.T) {
+	dir := GetSurgeDir()
+	if !filepath.IsAbs(dir) {
+		t.Errorf("GetSurgeDir should return absolute path, got: %s", dir)
+	}
+}
+
+func TestGetStateDir_AbsolutePath(t *testing.T) {
+	dir := GetStateDir()
+	if !filepath.IsAbs(dir) {
+		t.Errorf("GetStateDir should return absolute path, got: %s", dir)
+	}
+}
+
+func TestGetLogsDir_AbsolutePath(t *testing.T) {
+	dir := GetLogsDir()
+	if !filepath.IsAbs(dir) {
+		t.Errorf("GetLogsDir should return absolute path, got: %s", dir)
+	}
+}
+
+func TestPathConsistency(t *testing.T) {
+	// Multiple calls should return the same paths
+	dir1 := GetSurgeDir()
+	dir2 := GetSurgeDir()
+	if dir1 != dir2 {
+		t.Errorf("GetSurgeDir should return consistent paths: %s vs %s", dir1, dir2)
+	}
+
+	state1 := GetStateDir()
+	state2 := GetStateDir()
+	if state1 != state2 {
+		t.Errorf("GetStateDir should return consistent paths: %s vs %s", state1, state2)
+	}
+
+	logs1 := GetLogsDir()
+	logs2 := GetLogsDir()
+	if logs1 != logs2 {
+		t.Errorf("GetLogsDir should return consistent paths: %s vs %s", logs1, logs2)
+	}
+}
+
+func TestDirectoryHierarchy(t *testing.T) {
+	surgeDir := GetSurgeDir()
+	stateDir := GetStateDir()
+	logsDir := GetLogsDir()
+
+	// State and logs should be subdirectories of surge dir
+	expectedStateDir := filepath.Join(surgeDir, "state")
+	expectedLogsDir := filepath.Join(surgeDir, "logs")
+
+	if stateDir != expectedStateDir {
+		t.Errorf("StateDir should be %s, got: %s", expectedStateDir, stateDir)
+	}
+
+	if logsDir != expectedLogsDir {
+		t.Errorf("LogsDir should be %s, got: %s", expectedLogsDir, logsDir)
+	}
+}
+
+func TestEnsureDirs_Idempotent(t *testing.T) {
+	// EnsureDirs should be safe to call multiple times
+	for i := 0; i < 3; i++ {
+		err := EnsureDirs()
+		if err != nil {
+			t.Errorf("EnsureDirs failed on call %d: %v", i+1, err)
+		}
+	}
+}
+
+func TestPathsNoTrailingSlash(t *testing.T) {
+	dirs := []struct {
+		name string
+		path string
+	}{
+		{"SurgeDir", GetSurgeDir()},
+		{"StateDir", GetStateDir()},
+		{"LogsDir", GetLogsDir()},
+	}
+
+	for _, d := range dirs {
+		if strings.HasSuffix(d.path, string(filepath.Separator)) {
+			t.Errorf("%s should not have trailing separator: %s", d.name, d.path)
 		}
 	}
 }
