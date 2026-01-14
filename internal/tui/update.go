@@ -590,6 +590,11 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
+			// Block bare ESC from propagating (only quit via ctrl+q/ctrl+c)
+			if msg.String() == "esc" {
+				return m, nil
+			}
+
 			// Pass messages to the list for navigation/filtering
 			var cmd tea.Cmd
 			m.list, cmd = m.list.Update(msg)
