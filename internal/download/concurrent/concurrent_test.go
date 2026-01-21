@@ -2,6 +2,7 @@ package concurrent
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,24 @@ import (
 	"github.com/surge-downloader/surge/internal/testutil"
 )
 
+func setupTestEnv(t *testing.T) string {
+	// Create temp directory for test
+	tempDir, err := os.MkdirTemp("", "surge-iso-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+
+	// Mock environment to point to temp dir
+	t.Setenv("XDG_CONFIG_HOME", tempDir)
+	t.Setenv("APPDATA", tempDir)
+	t.Setenv("HOME", tempDir)
+
+	// Force DB re-init
+	state.CloseDB()
+
+	return tempDir
+}
+
 // ... existing imports ...
 
 // =============================================================================
@@ -21,6 +40,9 @@ import (
 // ... (rest of the file until the test) ...
 
 func TestConcurrentDownloader_ResumePartialDownload(t *testing.T) {
+	tmpDir := setupTestEnv(t)
+	defer os.RemoveAll(tmpDir)
+
 	if err := config.EnsureDirs(); err != nil {
 		t.Fatalf("Failed to create config dirs: %v", err)
 	}
@@ -32,9 +54,7 @@ func TestConcurrentDownloader_ResumePartialDownload(t *testing.T) {
 	)
 	defer server.Close()
 
-	tmpDir, cleanup, _ := testutil.TempDir("surge-resume-test")
-	defer cleanup()
-
+	// Use the isolated tempDir for downloads too
 	destPath := filepath.Join(tmpDir, "resume_test.bin")
 	workingPath := destPath + types.IncompleteSuffix
 
@@ -45,29 +65,32 @@ func TestConcurrentDownloader_ResumePartialDownload(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	downloadID := "resume-id"
+
 	// Create saved state for resume
 	remainingTasks := []types.Task{
 		{Offset: partialSize, Length: fileSize - partialSize},
 	}
 	savedState := &types.DownloadState{
+		ID:         downloadID, // MUST match the downloader ID for DeleteState to work
 		URL:        server.URL(),
 		DestPath:   destPath,
 		TotalSize:  fileSize,
 		Downloaded: partialSize,
 		Tasks:      remainingTasks,
 		Filename:   "resume_test.bin",
-		URLHash:    state.URLHash(server.URL()), // Helper from state package
+		URLHash:    state.URLHash(server.URL()),
 	}
 	if err := state.SaveState(server.URL(), destPath, savedState); err != nil {
 		t.Fatalf("Failed to save state: %v", err)
 	}
-	defer state.DeleteState("resume-id", server.URL(), destPath)
+	// No need to defer DeleteState here since we want to test if Downloader deletes it
 
 	// Now resume download
 	progressState := types.NewProgressState("resume-test", fileSize)
 	runtime := &types.RuntimeConfig{MaxConnectionsPerHost: 2}
 
-	downloader := NewConcurrentDownloader("resume-id", nil, progressState, runtime)
+	downloader := NewConcurrentDownloader(downloadID, nil, progressState, runtime)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

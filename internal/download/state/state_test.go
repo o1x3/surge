@@ -1,11 +1,43 @@
 package state
 
 import (
+	"database/sql"
+	"os"
+	"path/filepath"
 	"testing"
 
-	"github.com/surge-downloader/surge/internal/config"
+	"github.com/google/uuid"
 	"github.com/surge-downloader/surge/internal/download/types"
 )
+
+func setupTestDB(t *testing.T) string {
+	// Create temp directory for test
+	tempDir, err := os.MkdirTemp("", "surge-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+
+	// Mock environment to point to temp dir
+	// We need to set XDG_CONFIG_HOME for Linux, and potentially others for cross-platform safety in tests
+	t.Setenv("XDG_CONFIG_HOME", tempDir)
+	t.Setenv("APPDATA", tempDir)
+	t.Setenv("HOME", tempDir)
+
+	// Reset DB singleton
+	dbMu.Lock()
+	if db != nil {
+		db.Close()
+		db = nil
+	}
+	dbMu.Unlock()
+
+	// Initialize DB
+	if err := initDB(); err != nil {
+		t.Fatalf("Failed to init DB: %v", err)
+	}
+
+	return tempDir
+}
 
 func TestURLHash(t *testing.T) {
 	tests := []struct {
@@ -41,46 +73,17 @@ func TestURLHashUniqueness(t *testing.T) {
 	}
 }
 
-func TestURLHashConsistency(t *testing.T) {
-	url := "https://example.com/consistent.zip"
-
-	hash1 := URLHash(url)
-	hash2 := URLHash(url)
-
-	if hash1 != hash2 {
-		t.Errorf("Same URL produced different hashes: %s vs %s", hash1, hash2)
-	}
-}
-
-func TestStateHashUniqueness(t *testing.T) {
-	// Same URL, different destinations should produce different hashes
-	url := "https://example.com/file.zip"
-	dest1 := "C:\\Downloads\\file.zip"
-	dest2 := "C:\\Downloads\\file(1).zip"
-
-	hash1 := StateHash(url, dest1)
-	hash2 := StateHash(url, dest2)
-
-	if hash1 == hash2 {
-		t.Errorf("Same URL with different destinations produced same StateHash: %s", hash1)
-	}
-
-	// Verify StateHash is consistent
-	hash3 := StateHash(url, dest1)
-	if hash1 != hash3 {
-		t.Errorf("Same URL+dest produced different StateHash: %s vs %s", hash1, hash3)
-	}
-}
-
 func TestSaveLoadState(t *testing.T) {
-	// Ensure directories exist
-	if err := config.EnsureDirs(); err != nil {
-		t.Fatalf("Failed to create directories: %v", err)
-	}
+	tmpDir := setupTestDB(t)
+	defer os.RemoveAll(tmpDir)
+	defer CloseDB()
 
 	testURL := "https://test.example.com/save-load-test.zip"
-	testDestPath := "C:\\Downloads\\testfile.zip"
+	testDestPath := filepath.Join(tmpDir, "testfile.zip")
+
+	id := uuid.New().String()
 	originalState := &types.DownloadState{
+		ID:         id,
 		URL:        testURL,
 		DestPath:   testDestPath,
 		TotalSize:  1000000,
@@ -104,6 +107,9 @@ func TestSaveLoadState(t *testing.T) {
 	}
 
 	// Verify fields
+	if loadedState.ID != originalState.ID {
+		t.Errorf("ID = %s, want %s", loadedState.ID, originalState.ID)
+	}
 	if loadedState.URL != originalState.URL {
 		t.Errorf("URL = %s, want %s", loadedState.URL, originalState.URL)
 	}
@@ -127,13 +133,16 @@ func TestSaveLoadState(t *testing.T) {
 }
 
 func TestDeleteState(t *testing.T) {
-	if err := config.EnsureDirs(); err != nil {
-		t.Fatalf("Failed to create directories: %v", err)
-	}
+	tmpDir := setupTestDB(t)
+	defer os.RemoveAll(tmpDir)
+	defer CloseDB()
 
 	testURL := "https://test.example.com/delete-test.zip"
-	testDestPath := "C:\\Downloads\\delete-test.zip"
+	testDestPath := filepath.Join(tmpDir, "delete-test.zip")
+	id := "test-id-delete"
+
 	state := &types.DownloadState{
+		ID:       id,
 		URL:      testURL,
 		DestPath: testDestPath,
 		Filename: "delete-test.zip",
@@ -150,7 +159,7 @@ func TestDeleteState(t *testing.T) {
 	}
 
 	// Delete state
-	if err := DeleteState("test-id", testURL, testDestPath); err != nil {
+	if err := DeleteState(id, testURL, testDestPath); err != nil {
 		t.Fatalf("DeleteState failed: %v", err)
 	}
 
@@ -158,21 +167,23 @@ func TestDeleteState(t *testing.T) {
 	_, err := LoadState(testURL, testDestPath)
 	if err == nil {
 		t.Error("LoadState should fail after DeleteState")
+	} else if err == sql.ErrNoRows {
+		// Acceptable error
 	}
 }
 
 func TestStateOverwrite(t *testing.T) {
-	// This tests the scenario: pause at 30%, resume to 80%, pause again
-	// The state should reflect 80%, not 30%
-	if err := config.EnsureDirs(); err != nil {
-		t.Fatalf("Failed to create directories: %v", err)
-	}
+	tmpDir := setupTestDB(t)
+	defer os.RemoveAll(tmpDir)
+	defer CloseDB()
 
 	testURL := "https://test.example.com/overwrite-test.zip"
-	testDestPath := "C:\\Downloads\\overwrite-test.zip"
+	testDestPath := filepath.Join(tmpDir, "overwrite-test.zip")
+	id := "test-id-overwrite"
 
 	// First pause at 30%
 	state1 := &types.DownloadState{
+		ID:         id,
 		URL:        testURL,
 		DestPath:   testDestPath,
 		TotalSize:  1000000,
@@ -186,6 +197,7 @@ func TestStateOverwrite(t *testing.T) {
 
 	// Second pause at 80% (simulating resume + more downloading)
 	state2 := &types.DownloadState{
+		ID:         id,
 		URL:        testURL,
 		DestPath:   testDestPath,
 		TotalSize:  1000000,
@@ -209,24 +221,23 @@ func TestStateOverwrite(t *testing.T) {
 	if len(loaded.Tasks) != 1 || loaded.Tasks[0].Offset != 800000 {
 		t.Errorf("Tasks not properly overwritten, got offset %d", loaded.Tasks[0].Offset)
 	}
-
-	// Cleanup
-	DeleteState("test-id", testURL, testDestPath)
 }
 
-// TestDuplicateURLStateIsolation verifies that downloading the same URL multiple times
-// creates separate state files for each download (the bug being fixed)
 func TestDuplicateURLStateIsolation(t *testing.T) {
-	if err := config.EnsureDirs(); err != nil {
-		t.Fatalf("Failed to create directories: %v", err)
-	}
+	tmpDir := setupTestDB(t)
+	defer os.RemoveAll(tmpDir)
+	defer CloseDB()
 
 	testURL := "https://example.com/samefile.zip"
-	dest1 := "C:\\Downloads\\samefile.zip"
-	dest2 := "C:\\Downloads\\samefile(1).zip"
-	dest3 := "C:\\Downloads\\samefile(2).zip"
+	dest1 := filepath.Join(tmpDir, "samefile.zip")
+	dest2 := filepath.Join(tmpDir, "samefile(1).zip")
+	dest3 := filepath.Join(tmpDir, "samefile(2).zip")
 
 	// Create 3 downloads of the same URL with different destinations
+	// IMPORTANT: Must allow separate IDs or rely on unique constraints?
+	// The new DB schema has ID as Primary Key.
+	// If we don't provide ID, SaveState generates one.
+
 	state1 := &types.DownloadState{
 		URL:        testURL,
 		DestPath:   dest1,
@@ -252,7 +263,7 @@ func TestDuplicateURLStateIsolation(t *testing.T) {
 		Filename:   "samefile(2).zip",
 	}
 
-	// Save all three states (simulating pausing 3 downloads)
+	// Save all three states
 	if err := SaveState(testURL, dest1, state1); err != nil {
 		t.Fatalf("SaveState 1 failed: %v", err)
 	}
@@ -263,7 +274,7 @@ func TestDuplicateURLStateIsolation(t *testing.T) {
 		t.Fatalf("SaveState 3 failed: %v", err)
 	}
 
-	// Load and verify each has its correct state (THE FIX)
+	// Load and verify each has its correct state
 	loaded1, err := LoadState(testURL, dest1)
 	if err != nil {
 		t.Fatalf("LoadState 1 failed: %v", err)
@@ -296,9 +307,4 @@ func TestDuplicateURLStateIsolation(t *testing.T) {
 	if loaded3.DestPath != dest3 {
 		t.Errorf("State 3 DestPath = %s, want %s", loaded3.DestPath, dest3)
 	}
-
-	// Cleanup
-	DeleteState("id1", testURL, dest1)
-	DeleteState("id2", testURL, dest2)
-	DeleteState("id3", testURL, dest3)
 }

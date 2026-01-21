@@ -258,8 +258,10 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath st
 		for {
 			select {
 			case <-ctx.Done():
+				queue.Close()
 				return
 			case <-balancerCtx.Done():
+				queue.Close()
 				return
 			case <-ticker.C:
 				if queue.Len() == 0 && int(queue.IdleWorkers()) == numConns {
@@ -315,7 +317,7 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath st
 		}
 	}
 
-	// Handle pause: save state and exit gracefully
+	// Handle pause: state saved
 	if d.State != nil && d.State.IsPaused() {
 		// Collect remaining tasks
 		remainingTasks := queue.DrainRemaining()
