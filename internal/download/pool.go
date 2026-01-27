@@ -4,9 +4,9 @@ import (
 	"context"
 	"sync"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/surge-downloader/surge/internal/download/types"
-	"github.com/surge-downloader/surge/internal/messages"
+	"github.com/surge-downloader/surge/internal/engine/events"
+	"github.com/surge-downloader/surge/internal/engine/state"
+	"github.com/surge-downloader/surge/internal/engine/types"
 )
 
 // activeDownload tracks a download that's currently running
@@ -17,14 +17,15 @@ type activeDownload struct {
 
 type WorkerPool struct {
 	taskChan     chan types.DownloadConfig
-	progressCh   chan<- tea.Msg
-	downloads    map[string]*activeDownload // Track active downloads for pause/resume
+	progressCh   chan<- any
+	downloads    map[string]*activeDownload      // Track active downloads for pause/resume
+	queued       map[string]types.DownloadConfig // Track queued downloads
 	mu           sync.RWMutex
 	wg           sync.WaitGroup //We use this to wait for all active downloads to pause before exiting the program
 	maxDownloads int
 }
 
-func NewWorkerPool(progressCh chan<- tea.Msg, maxDownloads int) *WorkerPool {
+func NewWorkerPool(progressCh chan<- any, maxDownloads int) *WorkerPool {
 	if maxDownloads < 1 {
 		maxDownloads = 3 // Default to 3 if invalid
 	}
@@ -32,6 +33,7 @@ func NewWorkerPool(progressCh chan<- tea.Msg, maxDownloads int) *WorkerPool {
 		taskChan:     make(chan types.DownloadConfig, 100), //We make it buffered to avoid blocking add
 		progressCh:   progressCh,
 		downloads:    make(map[string]*activeDownload),
+		queued:       make(map[string]types.DownloadConfig),
 		maxDownloads: maxDownloads,
 	}
 	for i := 0; i < maxDownloads; i++ {
@@ -40,8 +42,34 @@ func NewWorkerPool(progressCh chan<- tea.Msg, maxDownloads int) *WorkerPool {
 	return pool
 }
 
+// Add adds a new download task to the pool
 func (p *WorkerPool) Add(cfg types.DownloadConfig) {
+	p.mu.Lock()
+	p.queued[cfg.ID] = cfg
+	p.mu.Unlock()
 	p.taskChan <- cfg
+}
+
+// HasDownload checks if a download with the given URL already exists
+func (p *WorkerPool) HasDownload(url string) bool {
+	p.mu.RLock()
+	// Check active downloads
+	for _, ad := range p.downloads {
+		if ad.config.URL == url {
+			p.mu.RUnlock()
+			return true
+		}
+	}
+	p.mu.RUnlock()
+
+	// Check persistent store (completed/queued/paused)
+	// We do this outside the lock to avoid holding it during DB query
+	exists, err := state.CheckDownloadExists(url)
+	if err == nil && exists {
+		return true
+	}
+
+	return false
 }
 
 // Pause pauses a specific download by ID
@@ -65,7 +93,7 @@ func (p *WorkerPool) Pause(downloadID string) {
 		if ad.config.State != nil {
 			downloaded = ad.config.State.Downloaded.Load()
 		}
-		p.progressCh <- messages.DownloadPausedMsg{
+		p.progressCh <- events.DownloadPausedMsg{
 			DownloadID: downloadID,
 			Downloaded: downloaded,
 		}
@@ -133,7 +161,7 @@ func (p *WorkerPool) Resume(downloadID string) {
 
 	// Send resume message
 	if p.progressCh != nil {
-		p.progressCh <- messages.DownloadResumedMsg{
+		p.progressCh <- events.DownloadResumedMsg{
 			DownloadID: downloadID,
 		}
 	}
@@ -151,10 +179,11 @@ func (p *WorkerPool) worker() {
 			cancel: cancel,
 		}
 		p.mu.Lock()
+		delete(p.queued, cfg.ID)
 		p.downloads[cfg.ID] = ad
 		p.mu.Unlock()
 
-		err := TUIDownload(ctx, cfg)
+		err := TUIDownload(ctx, &ad.config)
 
 		// Check if this was a pause (not an error)
 		isPaused := cfg.State != nil && cfg.State.IsPaused()
@@ -164,7 +193,7 @@ func (p *WorkerPool) worker() {
 				cfg.State.SetError(err)
 			}
 			if p.progressCh != nil {
-				p.progressCh <- messages.DownloadErrorMsg{DownloadID: cfg.ID, Err: err}
+				p.progressCh <- events.DownloadErrorMsg{DownloadID: cfg.ID, Err: err}
 			}
 			// Clean up errored download from tracking (don't save to .surge)
 			p.mu.Lock()
@@ -188,8 +217,72 @@ func (p *WorkerPool) worker() {
 	}
 }
 
+// GetStatus returns the status of an active download
+func (p *WorkerPool) GetStatus(id string) *types.DownloadStatus {
+	p.mu.RLock()
+	ad, exists := p.downloads[id]
+	qCfg, qExists := p.queued[id]
+	p.mu.RUnlock()
+
+	if !exists && !qExists {
+		return nil
+	}
+
+	if qExists {
+		return &types.DownloadStatus{
+			ID:         id,
+			URL:        qCfg.URL,
+			Filename:   qCfg.Filename,
+			Status:     "queued",
+			Downloaded: 0,
+			TotalSize:  0, // Metadata not yet fetched
+		}
+	}
+
+	state := ad.config.State
+	if state == nil {
+		return nil
+	}
+
+	status := &types.DownloadStatus{
+		ID:         id,
+		URL:        ad.config.URL,
+		Filename:   ad.config.Filename,
+		TotalSize:  state.TotalSize,
+		Downloaded: state.Downloaded.Load(),
+		Status:     "downloading",
+	}
+
+	if state.IsPaused() {
+		status.Status = "paused"
+	} else if state.Done.Load() {
+		status.Status = "completed"
+	}
+
+	if err := state.GetError(); err != nil {
+		status.Status = "error"
+		status.Error = err.Error()
+	}
+
+	// Calculate progress
+	if status.TotalSize > 0 {
+		status.Progress = float64(status.Downloaded) * 100 / float64(status.TotalSize)
+	}
+
+	// Calculate speed (MB/s)
+	downloaded, _, elapsed, _, sessionStart := state.GetProgress()
+	sessionDownloaded := downloaded - sessionStart
+	if elapsed.Seconds() > 0 && sessionDownloaded > 0 {
+		bytesPerSec := float64(sessionDownloaded) / elapsed.Seconds()
+		status.Speed = bytesPerSec / (1024 * 1024)
+	}
+
+	return status
+}
+
 // GracefulShutdown pauses all downloads and waits for them to save state
 func (p *WorkerPool) GracefulShutdown() {
+	// ... existing implementation
 	p.PauseAll()
 	p.wg.Wait() // Blocks until all workers call Done()
 }

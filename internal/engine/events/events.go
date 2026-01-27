@@ -1,7 +1,9 @@
-package messages
+package events
 
 import (
 	"time"
+
+	"github.com/surge-downloader/surge/internal/engine/types"
 )
 
 // ProgressMsg represents a progress update from the downloader
@@ -34,6 +36,7 @@ type DownloadStartedMsg struct {
 	Filename   string
 	Total      int64
 	DestPath   string // Full path to the destination file
+	State      *types.ProgressState
 }
 
 type DownloadPausedMsg struct {
@@ -43,4 +46,12 @@ type DownloadPausedMsg struct {
 
 type DownloadResumedMsg struct {
 	DownloadID string
+}
+
+// DownloadRequestMsg signals a request to start a download (e.g. from extension)
+// that may need user confirmation or duplicate checking
+type DownloadRequestMsg struct {
+	URL      string
+	Filename string
+	Path     string
 }

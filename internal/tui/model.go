@@ -17,8 +17,8 @@ import (
 
 	"github.com/surge-downloader/surge/internal/config"
 	"github.com/surge-downloader/surge/internal/download"
-	"github.com/surge-downloader/surge/internal/download/state"
-	"github.com/surge-downloader/surge/internal/download/types"
+	"github.com/surge-downloader/surge/internal/engine/state"
+	"github.com/surge-downloader/surge/internal/engine/types"
 	"github.com/surge-downloader/surge/internal/version"
 )
 
@@ -44,13 +44,6 @@ const (
 	TabActive = 1
 	TabDone   = 2
 )
-
-// StartDownloadMsg is sent from the HTTP server to start a new download
-type StartDownloadMsg struct {
-	URL      string
-	Path     string
-	Filename string
-}
 
 type DownloadModel struct {
 	ID          string
@@ -84,7 +77,7 @@ type RootModel struct {
 	activeTab    int // 0=Queued, 1=Active, 2=Done
 	inputs       []textinput.Model
 	focusedInput int
-	progressChan chan tea.Msg // Channel for events only (start/complete/error)
+	progressChan chan any // Channel for events only (start/complete/error)
 
 	// File picker for directory selection
 	filepicker filepicker.Model
@@ -165,7 +158,7 @@ func NewDownloadModel(id string, url string, filename string, total int64) *Down
 	}
 }
 
-func InitialRootModel(serverPort int, currentVersion string) RootModel {
+func InitialRootModel(serverPort int, currentVersion string, pool *download.WorkerPool, progressChan chan any) RootModel {
 	// Initialize inputs
 	urlInput := textinput.New()
 	urlInput.Placeholder = "https://example.com/file.zip"
@@ -183,9 +176,6 @@ func InitialRootModel(serverPort int, currentVersion string) RootModel {
 	filenameInput.Placeholder = "(auto-detect)"
 	filenameInput.Width = InputWidth
 	filenameInput.Prompt = ""
-
-	// Create channel first so we can pass it to WorkerPool
-	progressChan := make(chan tea.Msg, ProgressChannelBuffer)
 
 	pwd, _ := os.Getwd()
 
@@ -274,7 +264,7 @@ func InitialRootModel(serverPort int, currentVersion string) RootModel {
 		filepicker:     fp,
 		help:           helpModel,
 		list:           downloadList,
-		Pool:           download.NewWorkerPool(progressChan, settings.General.MaxConcurrentDownloads),
+		Pool:           pool,
 		PWD:            pwd,
 		SpeedHistory:   make([]float64, GraphHistoryPoints), // 60 points of history (30s at 0.5s interval)
 		logViewport:    viewport.New(40, 5),                 // Default size, will be resized
@@ -289,18 +279,11 @@ func InitialRootModel(serverPort int, currentVersion string) RootModel {
 }
 
 func (m RootModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{listenForActivity(m.progressChan)}
 	// Trigger update check if not disabled in settings
 	if !m.Settings.General.SkipUpdateCheck {
-		cmds = append(cmds, checkForUpdateCmd(m.CurrentVersion))
+		return checkForUpdateCmd(m.CurrentVersion)
 	}
-	return tea.Batch(cmds...)
-}
-
-func listenForActivity(sub chan tea.Msg) tea.Cmd {
-	return func() tea.Msg {
-		return <-sub
-	}
+	return nil
 }
 
 // Helper to get downloads for the current tab
@@ -316,7 +299,7 @@ func (m RootModel) getFilteredDownloads() []*DownloadModel {
 				continue
 			}
 		case TabActive:
-			if d.done || d.Speed == 0 {
+			if d.done || (d.Speed == 0 && d.Connections == 0) {
 				continue
 			}
 		case TabDone:

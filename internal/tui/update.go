@@ -12,9 +12,9 @@ import (
 
 	"github.com/surge-downloader/surge/internal/clipboard"
 	"github.com/surge-downloader/surge/internal/config"
-	"github.com/surge-downloader/surge/internal/download/state"
-	"github.com/surge-downloader/surge/internal/download/types"
-	"github.com/surge-downloader/surge/internal/messages"
+	"github.com/surge-downloader/surge/internal/engine/events"
+	"github.com/surge-downloader/surge/internal/engine/state"
+	"github.com/surge-downloader/surge/internal/engine/types"
 	"github.com/surge-downloader/surge/internal/utils"
 	"github.com/surge-downloader/surge/internal/version"
 
@@ -187,8 +187,11 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
-	case StartDownloadMsg:
-		// Handle download request from HTTP server
+
+	case events.DownloadRequestMsg:
+		// Handle download request from HTTP server (extension)
+		// This message is only sent if user confirmation is required (ExtensionPrompt=true or Duplicate=true)
+
 		path := msg.Path
 		if path == "" {
 			path = m.Settings.General.DefaultDownloadDir
@@ -197,7 +200,21 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Check if extension prompt is enabled
+		// Check for specific duplicate warning case
+		// Even though root.go checks this, we re-check to determine WHICH screen to show
+		duplicate := m.checkForDuplicate(msg.URL)
+
+		if duplicate != nil && m.Settings.General.WarnOnDuplicate {
+			utils.Debug("Duplicate download detected in TUI: %s", msg.URL)
+			m.pendingURL = msg.URL
+			m.pendingPath = path
+			m.pendingFilename = msg.Filename
+			m.duplicateInfo = duplicate.Filename
+			m.state = DuplicateWarningState
+			return m, nil
+		}
+
+		// Otherwise it's a general extension prompt
 		if m.Settings.General.ExtensionPrompt {
 			m.pendingURL = msg.URL
 			m.pendingPath = path
@@ -206,44 +223,63 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Check for duplicate URL
-		if d := m.checkForDuplicate(msg.URL); d != nil {
-			utils.Debug("Duplicate download detected from extension: %s", msg.URL)
-			m.pendingURL = msg.URL
-			m.pendingPath = path
-			m.pendingFilename = msg.Filename
-			m.duplicateInfo = d.Filename
-			m.state = DuplicateWarningState
-			return m, nil
-		}
-
+		// Fallback: Just start it if for some reason we got here without needing a prompt
+		// (Should not happen given root.go logic, but safe fallback)
 		return m.startDownload(msg.URL, path, msg.Filename)
 
-	case messages.DownloadStartedMsg:
+	case events.DownloadStartedMsg:
 
-		// Find the download and update with real metadata + start polling
+		// Check if we already have this download
+		found := false
+		for _, d := range m.downloads {
+			if d.ID == msg.DownloadID {
+				found = true
+				break
+			}
+		}
+
+		// If not found (external download), add it
+		if !found {
+			// Create new model matching the started download
+			newDownload := NewDownloadModel(msg.DownloadID, msg.URL, msg.Filename, msg.Total)
+			if msg.State != nil {
+				newDownload.state = msg.State
+				newDownload.reporter = NewProgressReporter(msg.State)
+			}
+			newDownload.Destination = msg.DestPath
+			newDownload.state.SetTotalSize(msg.Total)
+
+			m.downloads = append(m.downloads, newDownload)
+			// Ensure polling starts for this new download
+			// Note: PollCmd will be added in the loop below to handle both new and existing downloads uniformly
+		}
+
+		// Update metadata for all matching downloads (including the one just added)
 		for _, d := range m.downloads {
 			if d.ID == msg.DownloadID {
 				d.Filename = msg.Filename
 				d.Total = msg.Total
-				d.URL = msg.URL
 				d.Destination = msg.DestPath
 				// Reset start time to exclude probing
 				d.StartTime = time.Now()
 				// Update the progress state with real total size
 				d.state.SetTotalSize(msg.Total)
-				// Start polling for this download
+				// Start polling for this download (ensures UI updates speed/progress)
 				cmds = append(cmds, d.reporter.PollCmd())
 				break
 			}
 		}
 		// Update list items to reflect new filename
 		m.UpdateListItems()
+		// Switch to active tab so user sees it
+		if m.Settings.General.AutoResume {
+			// Optional: switch tab logic if desired
+		}
 		// Add log entry
 		m.addLogEntry(LogStyleStarted.Render("⬇ Started: " + msg.Filename))
-		cmds = append(cmds, listenForActivity(m.progressChan))
+		return m, tea.Batch(cmds...)
 
-	case messages.ProgressMsg:
+	case events.ProgressMsg:
 		// Progress from polling reporter
 		for _, d := range m.downloads {
 			if d.ID == msg.DownloadID {
@@ -297,7 +333,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case messages.DownloadCompleteMsg:
+	case events.DownloadCompleteMsg:
 		for _, d := range m.downloads {
 			if d.ID == msg.DownloadID {
 				if d.done {
@@ -323,6 +359,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Filename:    d.Filename,
 					Status:      "completed",
 					TotalSize:   d.Total,
+					Downloaded:  d.Total,
 					CompletedAt: time.Now().Unix(),
 					TimeTaken:   d.Elapsed.Milliseconds(),
 				})
@@ -332,9 +369,9 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Update list items
 		m.UpdateListItems()
-		cmds = append(cmds, listenForActivity(m.progressChan))
+		return m, tea.Batch(cmds...)
 
-	case messages.DownloadErrorMsg:
+	case events.DownloadErrorMsg:
 		for _, d := range m.downloads {
 			if d.ID == msg.DownloadID {
 				d.err = msg.Err
@@ -345,9 +382,9 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.UpdateListItems()
-		cmds = append(cmds, listenForActivity(m.progressChan))
+		return m, nil
 
-	case messages.DownloadPausedMsg:
+	case events.DownloadPausedMsg:
 		for _, d := range m.downloads {
 			if d.ID == msg.DownloadID {
 				d.paused = true
@@ -359,9 +396,9 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.UpdateListItems()
-		cmds = append(cmds, listenForActivity(m.progressChan))
+		return m, nil
 
-	case messages.DownloadResumedMsg:
+	case events.DownloadResumedMsg:
 		for _, d := range m.downloads {
 			if d.ID == msg.DownloadID {
 				d.paused = false
@@ -373,7 +410,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.UpdateListItems()
-		cmds = append(cmds, listenForActivity(m.progressChan))
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width

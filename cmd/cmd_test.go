@@ -14,7 +14,14 @@ import (
 	"time"
 
 	"github.com/surge-downloader/surge/internal/config"
+	"github.com/surge-downloader/surge/internal/download"
 )
+
+func init() {
+	// Initialize GlobalPool for tests
+	GlobalProgressCh = make(chan any, 100)
+	GlobalPool = download.NewWorkerPool(GlobalProgressCh, 4)
+}
 
 // =============================================================================
 // findAvailablePort Tests
@@ -178,7 +185,7 @@ func TestCorsMiddleware_PassesThrough(t *testing.T) {
 // =============================================================================
 
 func TestHandleDownload_MethodNotAllowed(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/download", nil)
+	req := httptest.NewRequest(http.MethodPut, "/download", nil)
 	rec := httptest.NewRecorder()
 
 	handleDownload(rec, req, "")
@@ -251,6 +258,55 @@ func TestHandleDownload_PathTraversal(t *testing.T) {
 				t.Errorf("Expected 400, got %d", rec.Code)
 			}
 		})
+	}
+}
+
+// func TestHandleDownload_StatusQuery(t *testing.T) {
+// 	// Setup mock download
+// 	id := "test-status-id"
+// 	state := types.NewProgressState(id, 2000)
+// 	state.Downloaded.Store(1000)
+// 	GlobalPool.Add(types.DownloadConfig{
+// 		ID:    id,
+// 		URL:   "http://example.com/test",
+// 		State: state,
+// 	})
+
+// 	time.Sleep(50 * time.Millisecond) // Give worker time to pick it up
+
+// 	req := httptest.NewRequest(http.MethodGet, "/download?id="+id, nil)
+// 	rec := httptest.NewRecorder()
+
+// 	handleDownload(rec, req, "")
+
+// 	if rec.Code != http.StatusOK {
+// 		t.Fatalf("Expected 200, got %d", rec.Code)
+// 	}
+
+// 	var status types.DownloadStatus
+// 	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+// 		t.Fatalf("Failed to parse response: %v", err)
+// 	}
+
+// 	if status.ID != id {
+// 		t.Errorf("Expected ID %s, got %s", id, status.ID)
+// 	}
+// 	if status.TotalSize != 2000 {
+// 		t.Errorf("Expected TotalSize 2000, got %d", status.TotalSize)
+// 	}
+// 	if status.Status != "downloading" {
+// 		t.Errorf("Expected Status 'downloading', got '%s'", status.Status)
+// 	}
+// }
+
+func TestHandleDownload_StatusQuery_NotFound(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/download?id=missing-id", nil)
+	rec := httptest.NewRecorder()
+
+	handleDownload(rec, req, "")
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d", rec.Code)
 	}
 }
 
@@ -486,19 +542,6 @@ func TestGetCmd_Args(t *testing.T) {
 }
 
 // =============================================================================
-// progressChannelBuffer Constant Test
-// =============================================================================
-
-func TestProgressChannelBuffer(t *testing.T) {
-	if progressChannelBuffer <= 0 {
-		t.Errorf("progressChannelBuffer should be positive, got %d", progressChannelBuffer)
-	}
-	if progressChannelBuffer < 10 {
-		t.Log("progressChannelBuffer might be too small for high-frequency updates")
-	}
-}
-
-// =============================================================================
 // startHTTPServer Integration Tests
 // =============================================================================
 
@@ -593,8 +636,9 @@ func TestStartHTTPServer_DownloadEndpoint_MethodNotAllowed(t *testing.T) {
 	go startHTTPServer(ln, port, "")
 	time.Sleep(50 * time.Millisecond)
 
-	// GET should not be allowed
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/download", port))
+	// PUT should not be allowed
+	req, _ := http.NewRequest(http.MethodPut, fmt.Sprintf("http://127.0.0.1:%d/download", port), nil)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}

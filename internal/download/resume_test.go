@@ -7,11 +7,10 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/google/uuid"
 	"github.com/surge-downloader/surge/internal/download"
-	"github.com/surge-downloader/surge/internal/download/state"
-	"github.com/surge-downloader/surge/internal/download/types"
+	"github.com/surge-downloader/surge/internal/engine/state"
+	"github.com/surge-downloader/surge/internal/engine/types"
 	"github.com/surge-downloader/surge/internal/testutil"
 )
 
@@ -32,6 +31,8 @@ func TestIntegration_PauseResume(t *testing.T) {
 	state.CloseDB()
 
 	// Force DB init
+	dbPath := filepath.Join(tmpDir, "surge.db")
+	state.Configure(dbPath)
 	if _, err := state.GetDB(); err != nil {
 		t.Fatalf("Failed to init DB: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestIntegration_PauseResume(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a progress channel we can ignore
-	progressCh := make(chan tea.Msg, 100)
+	progressCh := make(chan any, 100)
 
 	// Create a runtime config
 	runtime := &types.RuntimeConfig{}
@@ -80,7 +81,7 @@ func TestIntegration_PauseResume(t *testing.T) {
 	errCh := make(chan error)
 	go func() {
 		// Provide a valid context for the download
-		errCh <- download.TUIDownload(ctx, cfg)
+		errCh <- download.TUIDownload(ctx, &cfg)
 	}()
 
 	// Wait a bit to let it download some data but not finish
@@ -146,7 +147,7 @@ func TestIntegration_PauseResume(t *testing.T) {
 	// Let's reset the Pause flag in the state at least.
 	progState.Resume()
 
-	err = download.TUIDownload(resumeCtx, cfg)
+	err = download.TUIDownload(resumeCtx, &cfg)
 	if err != nil {
 		t.Fatalf("Resume failed: %v", err)
 	}
