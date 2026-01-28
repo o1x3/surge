@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -503,7 +504,11 @@ def main():
         
         for i in range(num_iterations):
             print(f"\n  [ Iteration {i+1}/{num_iterations} ]")
-            for task in tasks:
+            
+            iteration_tasks = tasks.copy()
+            random.shuffle(iteration_tasks)
+
+            for task in iteration_tasks:
                 name = task["name"]
                 func = task["func"]
                 task_args = task["args"]
@@ -518,8 +523,8 @@ def main():
                 else:
                     print(" Failed")
                 
-                # Small cool-down between tools
-                time.sleep(0.5)
+                # Increase sleep to allow SSD buffer flush and server rate-limit reset
+                time.sleep(5)
 
         # Aggregate results
         final_results: list[BenchmarkResult] = []
@@ -538,6 +543,24 @@ def main():
                 continue
 
             times = [r.elapsed_seconds for r in successful_runs]
+            
+            # Outlier filtering: Take middle 60% of runs
+            # If we have N runs, sort them, and drop top 20% and bottom 20%.
+            # This requires at least enough runs to make sense, but for N=1 it will keep 1.
+            n = len(times)
+            if n > 2:
+                sorted_times = sorted(times)
+                trim_count = int(n * 0.2) # 20% from each side
+                # Slice from trim_count to n - trim_count
+                # e.g. n=10, trim=2, slice [2:8] -> indices 2,3,4,5,6,7 (6 items)
+                # e.g. n=5, trim=1, slice [1:4] -> indices 1,2,3 (3 items)
+                
+                # Ensure we don't trim everything (shouldn't happen with logic above if n > 2)
+                if trim_count > 0:
+                    filtered_times = sorted_times[trim_count : n - trim_count]
+                    if filtered_times:
+                        times = filtered_times
+
             avg_time = sum(times) / len(times)
             
             # Use the size from the first successful run (should be constant)

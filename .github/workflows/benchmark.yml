@@ -33,6 +33,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.24.4+auto"
+          cache-dependency-path: current/go.sum
 
       - name: Update APT
         run: sudo apt-get update
@@ -58,7 +59,7 @@ jobs:
         run: |
           cd current
           # Run benchmark and capture output to both console and file
-          python3 benchmark.py --surge-exec ../surge-current --surge-baseline ../surge-baseline --aria2 --speedtest -n 3 | tee benchmark_output.txt
+          python3 benchmark.py --surge-exec ../surge-current --surge-baseline ../surge-baseline --aria2 --speedtest -n 5 | tee benchmark_output.txt
 
           # Read file content into environment variable for next step (handling multiline)
           echo "BENCHMARK_RESULTS<<EOF" >> $GITHUB_ENV
