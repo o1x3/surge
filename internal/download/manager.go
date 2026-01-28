@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -10,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/surge-downloader/surge/internal/engine/state"
 	"github.com/surge-downloader/surge/internal/engine"
 	"github.com/surge-downloader/surge/internal/engine/concurrent"
 	"github.com/surge-downloader/surge/internal/engine/events"
 	"github.com/surge-downloader/surge/internal/engine/single"
+	"github.com/surge-downloader/surge/internal/engine/state"
 	"github.com/surge-downloader/surge/internal/engine/types"
 	"github.com/surge-downloader/surge/internal/utils"
 )
@@ -82,11 +83,13 @@ func uniqueFilePath(path string) string {
 func TUIDownload(ctx context.Context, cfg *types.DownloadConfig) error {
 
 	// Probe server once to get all metadata
+	utils.Debug("TUIDownload: Probing server... %s", cfg.URL)
 	probe, err := engine.ProbeServer(ctx, cfg.URL, cfg.Filename)
 	if err != nil {
-		utils.Debug("Probe failed: %v", err)
+		utils.Debug("TUIDownload: Probe failed: %v\n", err)
 		return err
 	}
+	utils.Debug("TUIDownload: Probe success %d", probe.FileSize)
 
 	// Start download timer (exclude probing time)
 	start := time.Now()
@@ -119,7 +122,7 @@ func TUIDownload(ctx context.Context, cfg *types.DownloadConfig) error {
 		// Resume: use the provided destination path for state lookup
 		savedState, _ = state.LoadState(cfg.URL, cfg.DestPath)
 	}
-	isResume := cfg.IsResume && savedState != nil && len(savedState.Tasks) > 0 && savedState.DestPath != ""
+	isResume := cfg.IsResume && savedState != nil && savedState.DestPath != ""
 
 	if isResume {
 		// Resume: use saved destination path directly (don't generate new unique name)
@@ -134,6 +137,7 @@ func TUIDownload(ctx context.Context, cfg *types.DownloadConfig) error {
 
 	// Update filename in config so caller (WorkerPool) sees it
 	cfg.Filename = finalFilename
+	cfg.DestPath = destPath // Save resolved path for resume logic (WorkerPool)
 
 	// Send download started message
 	if cfg.ProgressCh != nil {
@@ -166,6 +170,12 @@ func TUIDownload(ctx context.Context, cfg *types.DownloadConfig) error {
 	}
 
 	// Only send completion if NO error AND not paused
+	// Check specifically for ErrPaused to avoid treating it as error
+	if errors.Is(downloadErr, types.ErrPaused) {
+		utils.Debug("Download paused cleanly")
+		return nil // Return nil so worker can remove it from active map
+	}
+
 	isPaused := cfg.State != nil && cfg.State.IsPaused()
 	if downloadErr == nil && !isPaused && cfg.ProgressCh != nil {
 		cfg.ProgressCh <- events.DownloadCompleteMsg{

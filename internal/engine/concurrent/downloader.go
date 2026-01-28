@@ -214,6 +214,10 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath st
 			return fmt.Errorf("failed to preallocate file: %w", err)
 		}
 		tasks = createTasks(fileSize, chunkSize)
+		// Robustness: ensure state counter starts at 0 for fresh download
+		if d.State != nil {
+			d.State.Downloaded.Store(0)
+		}
 	}
 	queue := NewTaskQueue()
 	queue.PushMultiple(tasks)
@@ -266,7 +270,9 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath st
 				queue.Close()
 				return
 			case <-ticker.C:
-				if queue.Len() == 0 && int(queue.IdleWorkers()) == numConns {
+				// Ensure queue is empty (no pending retries) before considering byte count.
+				// This protects against cutting off active retries even if byte count seems high (due to overlaps etc).
+				if queue.Len() == 0 && (int(queue.IdleWorkers()) == numConns || d.State.Downloaded.Load() >= fileSize) {
 					queue.Close()
 					return
 				}
@@ -321,17 +327,19 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath st
 
 	// Handle pause: state saved
 	if d.State != nil && d.State.IsPaused() {
-		// Collect remaining tasks
-		remainingTasks := queue.DrainRemaining()
-
-		// Also collect active tasks as remaining work
+		// 1. Collect active tasks as remaining work FIRST
+		var activeRemaining []types.Task
 		d.activeMu.Lock()
 		for _, active := range d.activeTasks {
 			if remaining := active.RemainingTask(); remaining != nil {
-				remainingTasks = append(remainingTasks, *remaining)
+				activeRemaining = append(activeRemaining, *remaining)
 			}
 		}
 		d.activeMu.Unlock()
+
+		// 2. Collect remaining tasks from queue
+		remainingTasks := queue.DrainRemaining()
+		remainingTasks = append(remainingTasks, activeRemaining...)
 
 		// Calculate Downloaded from remaining tasks (ensures consistency)
 		var remainingBytes int64
@@ -340,20 +348,13 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath st
 		}
 		computedDownloaded := fileSize - remainingBytes
 
-		// Debug: compare atomic counter vs computed value to verify fix
-		atomicDownloaded := d.State.Downloaded.Load()
-		if atomicDownloaded != computedDownloaded {
-			utils.Debug("PAUSE FIX: Atomic counter=%d, Computed from tasks=%d, Diff=%d bytes",
-				atomicDownloaded, computedDownloaded, atomicDownloaded-computedDownloaded)
-		}
-
 		// Save state for resume (use computed value for consistency)
 		s := &types.DownloadState{
 			URL:        d.URL,
 			ID:         d.ID,
 			DestPath:   destPath,
 			TotalSize:  fileSize,
-			Downloaded: computedDownloaded, // FIX: Use computed value instead of atomic counter
+			Downloaded: computedDownloaded,
 			Tasks:      remainingTasks,
 			Filename:   filepath.Base(destPath),
 		}
@@ -363,7 +364,7 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath st
 
 		utils.Debug("Download paused, state saved (Downloaded=%d, RemainingTasks=%d, RemainingBytes=%d)",
 			computedDownloaded, len(remainingTasks), remainingBytes)
-		return nil // Graceful exit, not an error
+		return types.ErrPaused // Signal valid pause to caller
 	}
 
 	// Handle cancel: context was cancelled but not via Pause() - just exit cleanly
